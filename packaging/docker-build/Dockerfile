@@ -52,6 +52,7 @@ RUN apt-get update \
         equivs \
         libevent-dev \
         zlib1g-dev \
+        libffi-dev \
         libssl-dev \
         wget $EXTRA_PACKAGES
 
