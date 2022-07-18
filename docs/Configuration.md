@@ -42,6 +42,9 @@ resolve_ip_addresses = True
 ; Defaults to True
 ;use_sudo = True
 
+;using_unix_socket_endpoint = True 
+;unix_socket_path = <socket path>. Defaults to "/tmp/db.sock".
+
 [storage]
 storage_provider = <Storage system used for backups>
 ; storage_provider should be either of "local", "google_storage" or "s3"
