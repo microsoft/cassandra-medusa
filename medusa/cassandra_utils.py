@@ -38,7 +38,7 @@ from retrying import retry
 
 from medusa.host_man import HostMan
 from medusa.network.hostname_resolver import HostnameResolver
-from medusa.nodetool import Nodetool
+from medusa.novatool import Novatool
 from medusa.service.snapshot import SnapshotService
 from medusa.utils import null_if_empty, evaluate_boolean
 import medusa.config
@@ -364,7 +364,7 @@ class Cassandra(object):
         self._stop_cmd = shlex.split(cassandra_config.stop_cmd)
         self._is_ccm = int(shlex.split(cassandra_config.is_ccm)[0])
         self._os_has_systemd = self._has_systemd()
-        self._nodetool = Nodetool(cassandra_config)
+        self._nodetool = Novatool()
         config_reader = CassandraConfigReader(cassandra_config.config_file, release_version)
         self._cassandra_config_file = cassandra_config.config_file
         self._root = config_reader.root
