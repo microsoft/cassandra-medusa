@@ -41,7 +41,6 @@ from medusa.network.hostname_resolver import HostnameResolver
 from medusa.novatool import Novatool
 from medusa.service.snapshot import SnapshotService
 from medusa.utils import null_if_empty, evaluate_boolean
-import medusa.config
 
 
 class SnapshotPath(object):
@@ -65,8 +64,8 @@ class CqlSessionProvider(object):
         self._cassandra_config = config.cassandra
         self._config = config
         self._native_port = CassandraConfigReader(self._cassandra_config.config_file).native_port
-        self._using_unix_socket_endpoint = medusa.config.evaluate_boolean(cassandra_config.using_unix_socket_endpoint)
-        self._unix_socket_path = cassandra_config.unix_socket_path
+        self._using_unix_socket_endpoint = evaluate_boolean(self._cassandra_config.using_unix_socket_endpoint)
+        self._unix_socket_path = self._cassandra_config.unix_socket_path
 
         if null_if_empty(self._cassandra_config.cql_username) and null_if_empty(self._cassandra_config.cql_password):
             auth_provider = PlainTextAuthProvider(username=self._cassandra_config.cql_username,
@@ -180,7 +179,7 @@ class CqlSession(object):
 
     def placement(self):
         logging.debug('Checking placement using dc and rack...')
-        listen_adddres = self._listen_address()
+        listen_address = self._listen_address()
         token_map = self.cluster.metadata.token_map
 
         for host in token_map.token_to_host_owner.values():
