@@ -96,12 +96,17 @@ class NodeBackupCache(object):
                     cached_item = self._cached_objects.get(fqtn, {}).get(self._sanitize_file_path(src))
 
                 threshold = self._storage_config.multi_part_upload_threshold
-                if cached_item is None or not self._storage_driver.file_matches_cache(src,
-                                                                                      cached_item,
-                                                                                      threshold,
-                                                                                      self._enable_md5_checks):
-                    # We have no matching object in the cache matching the file
+                if cached_item is None:
                     retained.append(src)
+                elif not self._storage_driver.file_matches_cache(src,
+                                                                 cached_item,
+                                                                 threshold,
+                                                                 self._enable_md5_checks):
+                    # We have no matching object in the cache matching the file
+                    err_msg = 'The local file {} does not match the file {} in the storage account'\
+                        .format(src, cached_item)
+                    logging.error(err_msg)
+                    raise Exception(err_msg)
                 else:
                     # File was already present in the previous backup
                     # In case the backup isn't differential or the cache backup isn't differential, copy from cache
