@@ -59,12 +59,12 @@ class AzCli(object):
 
         return objects
 
-    def cp_download(self, *, src, bucket_name, dest, max_retries=5):
+    def cp_download(self, *, src, bucket_name, dest, md5_hash, max_retries=5):
         job_id = str(uuid.uuid4())
         azcli_output = "/tmp/azcli_{0}.output".format(job_id)
         objects = []
         dest_file_name = str(src).split("/")[-1]
-        dest_file_name = medusa.utils.remove_suffix(dest_file_name)
+        dest_file_name = medusa.utils.remove_suffix(dest_file_name, md5_hash)
         dest_path = os.path.join(str(dest), dest_file_name)
 
         cmd = self._az_cli_cmd + ["storage", "blob", "download", "-f", dest_path, "-c", bucket_name, "-n", str(src)]

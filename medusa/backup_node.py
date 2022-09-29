@@ -94,11 +94,11 @@ class NodeBackupCache(object):
                 fqtn = (keyspace, columnfamily)
                 cached_item = None
                 actual_hash = AbstractStorage.generate_md5_hash(src) if self._enable_md5_checks else None
-                suffix = base64.b64encode(actual_hash)
+                suffix = base64.b64decode(actual_hash).hex() if self._enable_md5_checks else None
 
                 if self._storage_provider == Provider.GOOGLE_STORAGE or self._differential_mode is True:
                     blob_path = self._sanitize_file_path(src)
-                    blob_path_with_suffix = medusa.utils.append_suffix(blob_path, actual_hash)
+                    blob_path_with_suffix = medusa.utils.append_suffix(blob_path, suffix)
                     cached_item = self._cached_objects.get(fqtn, {}).get(blob_path_with_suffix)
                     if cached_item is None:
                         cached_item = self._cached_objects.get(fqtn, {}).get(blob_path)
