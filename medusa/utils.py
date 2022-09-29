@@ -45,3 +45,14 @@ def null_if_empty(value):
     if (str(value) == ''):
         return None
     return value
+
+
+def append_suffix(file_name, suffix):
+    if suffix:
+        return file_name + "_" + suffix
+    else:
+        return file_name
+
+
+def remove_suffix(file_name):
+    return file_name.split('_')[0]

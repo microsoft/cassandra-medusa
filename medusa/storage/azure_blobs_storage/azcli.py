@@ -8,6 +8,8 @@ import uuid
 
 from retrying import retry
 
+import medusa
+
 
 class AzCli(object):
 
@@ -61,7 +63,10 @@ class AzCli(object):
         job_id = str(uuid.uuid4())
         azcli_output = "/tmp/azcli_{0}.output".format(job_id)
         objects = []
-        dest_path = os.path.join(str(dest), str(src).split("/")[-1])
+        dest_file_name = str(src).split("/")[-1]
+        dest_file_name = medusa.utils.remove_suffix(dest_file_name)
+        dest_path = os.path.join(str(dest), dest_file_name)
+
         cmd = self._az_cli_cmd + ["storage", "blob", "download", "-f", dest_path, "-c", bucket_name, "-n", str(src)]
         self.download_file(cmd, dest, azcli_output)
         return objects

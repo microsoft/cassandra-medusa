@@ -87,16 +87,18 @@ def upload_blobs(
     return job.execute(list(src))
 
 
-def __upload_file(storage, connection, src, dest, bucket, multi_part_upload_threshold):
+def __upload_file(storage, connection, src_suffix_tuple, dest, bucket, multi_part_upload_threshold):
     """
     This function is called by StorageJob. It may be called concurrently by multiple threads.
 
     :param connection: A storage connection which is created and managed by StorageJob
-    :param src: The file to upload
+    :param src_suffix_tuple: (The file to upload, The suffix to be appended to the file)
     :param dest: The location where to upload the file
     :param bucket: The remote bucket where the file will be stored
     :return: A ManifestObject describing the uploaded file
     """
+
+    src, suffix = src_suffix_tuple
     if not isinstance(src, pathlib.Path):
         src = pathlib.Path(src)
 
@@ -109,6 +111,7 @@ def __upload_file(storage, connection, src, dest, bucket, multi_part_upload_thre
         else src.name
     )
     full_object_name = str("{}/{}".format(dest, obj_name))
+    full_object_name = medusa.utils.append_suffix(full_object_name, suffix)
 
     # if file is empty, uploading with libcloud azure storage driver (_upload_single_part) will fail with 403 error
     # thus, we need to use az cli command (_upload_multi_part) to upload empty files
@@ -204,6 +207,7 @@ def _download_single_part(connection, blob, blob_dest):
         file_name = blob.name[blob.name.rfind("/") + 1:]
     else:
         file_name = blob.name
+    file_name = medusa.utils.remove_suffix(file_name)
     blob.download("{}/{}".format(blob_dest, file_name), overwrite_existing=True)
 
 
