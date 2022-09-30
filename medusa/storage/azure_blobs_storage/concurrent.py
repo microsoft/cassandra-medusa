@@ -87,16 +87,18 @@ def upload_blobs(
     return job.execute(list(src))
 
 
-def __upload_file(storage, connection, src, dest, bucket, multi_part_upload_threshold):
+def __upload_file(storage, connection, src_suffix_tuple, dest, bucket, multi_part_upload_threshold):
     """
     This function is called by StorageJob. It may be called concurrently by multiple threads.
 
     :param connection: A storage connection which is created and managed by StorageJob
-    :param src: The file to upload
+    :param src_suffix_tuple: (The file to upload, The suffix to be appended to the file)
     :param dest: The location where to upload the file
     :param bucket: The remote bucket where the file will be stored
     :return: A ManifestObject describing the uploaded file
     """
+
+    src, suffix = src_suffix_tuple
     if not isinstance(src, pathlib.Path):
         src = pathlib.Path(src)
 
@@ -109,6 +111,7 @@ def __upload_file(storage, connection, src, dest, bucket, multi_part_upload_thre
         else src.name
     )
     full_object_name = str("{}/{}".format(dest, obj_name))
+    full_object_name = medusa.utils.append_suffix(full_object_name, suffix)
 
     # if file is empty, uploading with libcloud azure storage driver (_upload_single_part) will fail with 403 error
     # thus, we need to use az cli command (_upload_multi_part) to upload empty files
@@ -184,32 +187,35 @@ def __download_blob(storage, connection, src, dest, bucket, multi_part_upload_th
             if src_path.parent.name.startswith(".")
             else dest
         )
+        md5_hash = blob.extra['md5_hash']
 
         if int(blob.size) >= multi_part_upload_threshold:
             # Files larger than the configured threshold should be uploaded as multi part
             logging.debug("Downloading {} as multi part".format(blob_dest))
-            _download_multi_part(storage, connection, src_path, bucket, blob_dest)
+            _download_multi_part(storage, connection, src_path, bucket, blob_dest, md5_hash)
         else:
             logging.debug("Downloading {} as single part".format(blob_dest))
-            _download_single_part(connection, blob, blob_dest)
+            _download_single_part(connection, blob, blob_dest, md5_hash)
 
     except ObjectDoesNotExistError:
         return None
 
 
 @retry(stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES, wait_exponential_multiplier=10000, wait_exponential_max=120000)
-def _download_single_part(connection, blob, blob_dest):
+def _download_single_part(connection, blob, blob_dest, md5_hash):
     index = blob.name.rfind("/")
     if index > 0:
         file_name = blob.name[blob.name.rfind("/") + 1:]
     else:
         file_name = blob.name
+
+    file_name = medusa.utils.remove_suffix(file_name, md5_hash)
     blob.download("{}/{}".format(blob_dest, file_name), overwrite_existing=True)
 
 
-def _download_multi_part(storage, connection, src, bucket, blob_dest):
+def _download_multi_part(storage, connection, src, bucket, blob_dest, md5_hash):
     with AzCli(storage) as azcli:
-        azcli.cp_download(src=src, bucket_name=bucket.name, dest=blob_dest)
+        azcli.cp_download(src=src, bucket_name=bucket.name, dest=blob_dest, md5_hash=md5_hash)
 
 
 def human_readable_size(size, decimal_places=3):
