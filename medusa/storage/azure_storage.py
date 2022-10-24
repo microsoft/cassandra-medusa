@@ -104,6 +104,10 @@ class AzureStorage(AbstractStorage):
         if not actual_hash:
             return sizes_match
 
+        if not hash_in_manifest:
+            logging.warning("Could not compare blob hashes because md5 hash in manifest is null.")
+            return True
+
         hashes_match = (
             # this case comes from comparing blob hashes to manifest entries (in context of GCS)
             actual_hash == base64.b64decode(hash_in_manifest).hex()
