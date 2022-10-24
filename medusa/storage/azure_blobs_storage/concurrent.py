@@ -87,18 +87,18 @@ def upload_blobs(
     return job.execute(list(src))
 
 
-def __upload_file(storage, connection, src_md5_tuple, dest, bucket, multi_part_upload_threshold):
+def __upload_file(storage, connection, src_suffix_tuple, dest, bucket, multi_part_upload_threshold):
     """
     This function is called by StorageJob. It may be called concurrently by multiple threads.
 
     :param connection: A storage connection which is created and managed by StorageJob
-    :param src_md5_tuple: (The file to upload, The md5 of the file content)
+    :param src_suffix_tuple: (The file to upload, The suffix to be appended to the file)
     :param dest: The location where to upload the file
     :param bucket: The remote bucket where the file will be stored
     :return: A ManifestObject describing the uploaded file
     """
 
-    src, md5 = src_md5_tuple
+    src, suffix = src_suffix_tuple
     if not isinstance(src, pathlib.Path):
         src = pathlib.Path(src)
 
@@ -111,7 +111,7 @@ def __upload_file(storage, connection, src_md5_tuple, dest, bucket, multi_part_u
         else src.name
     )
     full_object_name = str("{}/{}".format(dest, obj_name))
-    full_object_name = medusa.utils.append_suffix(full_object_name, md5)
+    full_object_name = medusa.utils.append_suffix(full_object_name, suffix)
 
     # if file is empty, uploading with libcloud azure storage driver (_upload_single_part) will fail with 403 error
     # thus, we need to use az cli command (_upload_multi_part) to upload empty files
@@ -123,10 +123,7 @@ def __upload_file(storage, connection, src_md5_tuple, dest, bucket, multi_part_u
         logging.debug("Uploading {} as single part".format(full_object_name))
         obj = _upload_single_part(storage, connection, src, bucket, full_object_name)
 
-    if not md5:
-        md5 = obj.extra['md5_hash']
-
-    return medusa.storage.ManifestObject(obj.name, int(obj.size), md5)
+    return medusa.storage.ManifestObject(obj.name, int(obj.size), obj.extra['md5_hash'])
 
 
 @retry(stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES, wait_fixed=5000)
