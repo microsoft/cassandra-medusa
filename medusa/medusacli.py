@@ -105,6 +105,8 @@ def configure_console_logging(verbosity, without_log_timestamp):
 @click.option('--backup-grace-period-in-days', help='Duration for which backup files cannot be deleted from storage')
 @click.option('--ssh-username')
 @click.option('--ssh-key-file')
+@click.option('--token-file')
+@click.option('--schema-file')
 @click.version_option(package_name='cassandra-medusa', message='%(version)s')
 @click.pass_context
 def cli(ctx, verbosity, without_log_timestamp, config_file, **kwargs):
@@ -123,15 +125,11 @@ def cli(ctx, verbosity, without_log_timestamp, config_file, **kwargs):
                    '(in addition to size, which is used by default)',
               is_flag=True, default=False)
 @click.option('--mode', default="differential", type=click.Choice(['full', 'differential']))
-@click.option('--token-file')
-@click.option('--schema-file')
 @pass_MedusaConfig
 def backup(medusaconfig, backup_name, stagger, enable_md5_checks, mode, token_file, schema_file):
     """
     Backup single Cassandra node
     """
-    medusaconfig.cassandra.token_file = token_file
-    medusaconfig.cassandra.schema_file = schema_file
     stagger_time = datetime.timedelta(seconds=stagger) if stagger else None
     BackupMan.register_backup(backup_name, is_async=False)
     return backup_node.handle_backup(medusaconfig, backup_name, stagger_time, enable_md5_checks, mode)
