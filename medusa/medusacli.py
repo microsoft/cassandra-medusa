@@ -126,7 +126,7 @@ def cli(ctx, verbosity, without_log_timestamp, config_file, **kwargs):
               is_flag=True, default=False)
 @click.option('--mode', default="differential", type=click.Choice(['full', 'differential']))
 @pass_MedusaConfig
-def backup(medusaconfig, backup_name, stagger, enable_md5_checks, mode, token_file, schema_file):
+def backup(medusaconfig, backup_name, stagger, enable_md5_checks, mode):
     """
     Backup single Cassandra node
     """
