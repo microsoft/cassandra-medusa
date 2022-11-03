@@ -296,14 +296,14 @@ def get_schema_and_tokenmap(cassandra, config):
 
     if config.cassandra.token_file:
         hostname_resolver = HostnameResolver(
-            resolve_addresse=evaluate_boolean(config.cassandra.resolve_ip_addresses),
+            resolve_addresses=evaluate_boolean(config.cassandra.resolve_ip_addresses),
             k8s_mode=evaluate_boolean(config.kubernetes.enabled if config.kubernetes else False)
         )
         with open(config.cassandra.token_file, "r") as f:
             tokenmap = json.load(f)
             tokenmap = {
                 hostname_resolver.resolve_fqdn(ip): value
-                for (ip, value) in tokenmap
+                for ip, value in tokenmap.items()
             }
 
     if not schema or not tokenmap:
