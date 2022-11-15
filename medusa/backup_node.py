@@ -93,7 +93,7 @@ class NodeBackupCache(object):
             else:
                 fqtn = (keyspace, columnfamily)
                 cached_item = None
-                actual_hash = self._storage_provider.generate_md5_hash(src) if self._enable_md5_checks else None
+                actual_hash = AbstractStorage.generate_md5_hash(src) if self._enable_md5_checks else None
                 md5 = base64.b64decode(actual_hash).hex() if self._enable_md5_checks else None
 
                 if self._storage_provider == Provider.GOOGLE_STORAGE or self._differential_mode is True:

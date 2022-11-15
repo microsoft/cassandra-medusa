@@ -24,6 +24,7 @@ from libcloud.storage.types import ObjectDoesNotExistError
 from retrying import retry
 
 import medusa
+from medusa.storage.abstract_storage import AbstractStorage
 from medusa.storage.azure_blobs_storage.azcli import AzCli
 
 MAX_UP_DOWN_LOAD_RETRIES = 5
@@ -127,7 +128,7 @@ def __upload_file(storage, connection, src_md5_tuple, dest, bucket, multi_part_u
     # md5 returned by storage server (namely, obj.extra['md5_hash']) is null if the uploaded file exceeds 64MB
     md5 = md5 or obj.extra['md5_hash']
     if not md5:
-        md5 = storage.generate_md5_hash(src)
+        md5 = AbstractStorage.generate_md5_hash(src)
 
     return medusa.storage.ManifestObject(obj.name, int(obj.size), md5)
 
