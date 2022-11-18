@@ -40,7 +40,7 @@ CassandraConfig = collections.namedtuple(
      'sstableloader_bin', 'nodetool_username', 'nodetool_password', 'nodetool_password_file_path', 'nodetool_host',
      'nodetool_port', 'certfile', 'usercert', 'userkey', 'sstableloader_ts', 'sstableloader_tspw',
      'sstableloader_ks', 'sstableloader_kspw', 'nodetool_ssl', 'resolve_ip_addresses', 'use_sudo', 'nodetool_flags',
-     'using_unix_socket_endpoint', 'unix_socket_path']
+     'using_unix_socket_endpoint', 'unix_socket_path', 'schema_file', 'token_file']
 )
 
 SSHConfig = collections.namedtuple(
@@ -138,7 +138,9 @@ def _build_default_config():
         'use_sudo': 'True',
         'nodetool_flags': '-Dcom.sun.jndi.rmiURLParsing=legacy',
         'using_unix_socket_endpoint': 'True',
-        "unix_socket_path": '/tmp/db.sock'
+        'unix_socket_path': '/tmp/db.sock',
+        'schema_file': '',
+        'token_file': ''
     }
 
     config['ssh'] = {
