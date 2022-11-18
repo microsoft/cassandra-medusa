@@ -94,26 +94,26 @@ class NodeBackupCache(object):
                 fqtn = (keyspace, columnfamily)
                 cached_item = None
                 actual_hash = AbstractStorage.generate_md5_hash(src) if self._enable_md5_checks else None
-                suffix = base64.b64decode(actual_hash).hex() if self._enable_md5_checks else None
+                md5 = base64.b64decode(actual_hash).hex() if self._enable_md5_checks else None
 
                 if self._storage_provider == Provider.GOOGLE_STORAGE or self._differential_mode is True:
                     blob_path = self._sanitize_file_path(src)
-                    blob_path_with_suffix = medusa.utils.append_suffix(blob_path, suffix)
+                    blob_path_with_suffix = medusa.utils.append_suffix(blob_path, md5)
                     cached_item = self._cached_objects.get(fqtn, {}).get(blob_path_with_suffix)
                     if cached_item is None:
                         cached_item = self._cached_objects.get(fqtn, {}).get(blob_path)
 
                 threshold = self._storage_config.multi_part_upload_threshold
                 if cached_item is None:
-                    retained.append((src, suffix))
-                elif not AzureStorage.compare_with_manifest(actual_size=src.stat().st_size,
+                    retained.append((src, md5))
+                elif not self._storage_provider.compare_with_manifest(actual_size=src.stat().st_size,
                                                             size_in_manifest=cached_item['size'],
                                                             actual_hash=actual_hash,
                                                             hash_in_manifest=cached_item['MD5'],
                                                             threshold=threshold):
                     if self._enable_md5_checks:
                         # We have no matching object in the cache matching the file
-                        retained.append((src, suffix))
+                        retained.append((src, md5))
                     else:
                         err_msg = 'The local file {} does not match the file {} in the storage account' \
                             .format(src, cached_item)
@@ -125,11 +125,11 @@ class NodeBackupCache(object):
                     if self._differential_mode is False and self._node_backup_cache_is_differential is False:
                         prefixed_path = '{}{}'.format(path_prefix, cached_item['path'])
                         cached_item_path = self._storage_driver.get_cache_path(prefixed_path)
-                        retained.append((cached_item_path, suffix))
+                        retained.append((cached_item_path, md5))
                     # This backup is differential, but the cached one wasn't
                     # We must re-upload the files according to the differential format
                     elif self._differential_mode is True and self._node_backup_cache_is_differential is False:
-                        retained.append((src, suffix))
+                        retained.append((src, md5))
                     else:
                         # in case the backup is differential, we want to rule out files, not copy them from cache
                         manifest_object = self._make_manifest_object(path_prefix, cached_item)
