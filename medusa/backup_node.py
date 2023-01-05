@@ -108,7 +108,7 @@ class NodeBackupCache(object):
                 threshold = self._storage_config.multi_part_upload_threshold
                 if cached_item is None:
                     retained.append((src, md5))
-                elif not self._storage_provider.compare_with_manifest(actual_size=src.stat().st_size,
+                elif not self._storage_driver.compare_with_manifest(actual_size=src.stat().st_size,
                                                             size_in_manifest=cached_item['size'],
                                                             actual_hash=actual_hash,
                                                             hash_in_manifest=cached_item['MD5'],
