@@ -14,9 +14,12 @@
 # limitations under the License.
 
 import logging
+import secrets
+import string
 import sys
 import traceback
 
+SUFFIX_LENGTH = 32
 
 def evaluate_boolean(value):
     # same behaviour as python's configparser
@@ -47,15 +50,16 @@ def null_if_empty(value):
     return value
 
 
-def append_suffix(file_name, suffix):
-    if suffix:
-        return file_name + suffix
-    else:
-        return file_name
+def append_suffix(file_name):
+    alphabet = string.ascii_letters + string.digits
+    suffix = ''.join(secrets.choice(alphabet) for _ in range(SUFFIX_LENGTH))
+
+    return file_name + suffix
 
 
-def remove_suffix(file_name, suffix):
-    if suffix:
-        return file_name.removesuffix(suffix)
-    else:
-        return file_name
+def remove_suffix(file_name):
+    # if ext is longer than SUFFIX_LENGTH characters, it means SUFFIX_LENGTH characters suffix was appended
+    if len(file_name.split('.')[-1]) > SUFFIX_LENGTH:
+        file_name = file_name[:len(file_name) - SUFFIX_LENGTH]
+
+    return file_name

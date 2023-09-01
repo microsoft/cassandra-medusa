@@ -69,13 +69,16 @@ class NodeBackupCache(object):
         self._enable_md5_checks = enable_md5_checks
 
     def _sanitize_file_path(self, path):
+        sanitized_path = path.name
+
         # Secondary indexes are stored as subdirectories to the base table, starting with a dot.
         # In order to avoid mixing 2i sstables with the base table sstables, the file name isn't enough
         # to perform the comparison on differential backups. We need to retain the subdir name for 2i tables.
         if path.parts[-2].startswith('.'):
-            return os.path.join(path.parts[-2], path.parts[-1])
-        else:
-            return path.name
+            sanitized_path = os.path.join(path.parts[-2], path.parts[-1])
+
+        sanitized_path = medusa.utils.remove_suffix(sanitized_path)
+        return sanitized_path
 
     @property
     def replaced(self):
@@ -95,43 +98,29 @@ class NodeBackupCache(object):
             else:
                 fqtn = (keyspace, columnfamily)
                 cached_item = None
-                actual_hash = AbstractStorage.generate_md5_hash(src) if self._enable_md5_checks else None
-                md5 = base64.b64decode(actual_hash).hex() if self._enable_md5_checks else None
-
                 if self._storage_provider == Provider.GOOGLE_STORAGE or self._differential_mode is True:
-                    blob_path = self._sanitize_file_path(src)
-                    blob_path_with_suffix = medusa.utils.append_suffix(blob_path, md5)
-                    cached_item = self._cached_objects.get(fqtn, {}).get(blob_path_with_suffix)
-                    if cached_item is None:
-                        cached_item = self._cached_objects.get(fqtn, {}).get(blob_path)
+                    cached_item = self._cached_objects.get(fqtn, {}).get(self._sanitize_file_path(src))
 
                 threshold = self._storage_config.multi_part_upload_threshold
                 if cached_item is None:
-                    retained.append((src, md5))
-                elif not self._storage_driver.compare_with_manifest(actual_size=src.stat().st_size,
-                                                            size_in_manifest=cached_item['size'],
-                                                            actual_hash=actual_hash,
-                                                            hash_in_manifest=cached_item['MD5'],
-                                                            threshold=threshold):
-                    if self._enable_md5_checks:
-                        # We have no matching object in the cache matching the file
-                        retained.append((src, md5))
-                    else:
-                        err_msg = 'The local file {} does not match the file {} in the storage account' \
-                            .format(src, cached_item)
-                        logging.error(err_msg)
-                        raise Exception(err_msg)
+                    retained.append(src)
+                if cached_item is None or not self._storage_driver.file_matches_cache(src,
+                                                                                      cached_item,
+                                                                                      threshold,
+                                                                                      self._enable_md5_checks):
+                    # We have no matching object in the cache matching the file
+                    retained.append(src)
                 else:
                     # File was already present in the previous backup
                     # In case the backup isn't differential or the cache backup isn't differential, copy from cache
                     if self._differential_mode is False and self._node_backup_cache_is_differential is False:
                         prefixed_path = '{}{}'.format(path_prefix, cached_item['path'])
                         cached_item_path = self._storage_driver.get_cache_path(prefixed_path)
-                        retained.append((cached_item_path, md5))
+                        retained.append(cached_item_path)
                     # This backup is differential, but the cached one wasn't
                     # We must re-upload the files according to the differential format
                     elif self._differential_mode is True and self._node_backup_cache_is_differential is False:
-                        retained.append((src, md5))
+                        retained.append(src)
                     else:
                         # in case the backup is differential, we want to rule out files, not copy them from cache
                         manifest_object = self._make_manifest_object(path_prefix, cached_item)

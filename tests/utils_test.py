@@ -29,6 +29,20 @@ class RestoreNodeTest(unittest.TestCase):
         assert medusa.utils.null_if_empty("test") == "test"
         assert medusa.utils.null_if_empty(1) == 1
 
+    def test_append_suffix(self):
+        file_name = "cassandra-westus2000000/data/system_schema/views-9786ac1cdd583201a7cdad556410c985/nb-1-big-Data.db"
+        appended_file_name = medusa.utils.append_suffix(file_name)
+        assert appended_file_name.startswith(file_name)
+        assert len(appended_file_name) == len(file_name) + 32
+
+    def test_remove_suffix(self):
+        file_name = "cassandra-westus2000000/data/system_schema/views-9786ac1cdd583201a7cdad556410c985/nb-1-big-Index.db3c9baf37d5eca8bb2c3f29da1eabb7ab"
+        removed_file_name = medusa.utils.remove_suffix(file_name)
+        assert removed_file_name == "cassandra-westus2000000/data/system_schema/views-9786ac1cdd583201a7cdad556410c985/nb-1-big-Index.db"
+
+        file_name = "cassandra-westus2000000/data/system_schema/views-9786ac1cdd583201a7cdad556410c985/nb-1-big-Index.db"
+        removed_file_name = medusa.utils.remove_suffix(file_name)
+        assert removed_file_name == "cassandra-westus2000000/data/system_schema/views-9786ac1cdd583201a7cdad556410c985/nb-1-big-Index.db"
 
 if __name__ == '__main__':
     unittest.main()
