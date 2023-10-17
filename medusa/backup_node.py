@@ -102,8 +102,6 @@ class NodeBackupCache(object):
                     cached_item = self._cached_objects.get(fqtn, {}).get(self._sanitize_file_path(src))
 
                 threshold = self._storage_config.multi_part_upload_threshold
-                if cached_item is None:
-                    retained.append(src)
                 if cached_item is None or not self._storage_driver.file_matches_cache(src,
                                                                                       cached_item,
                                                                                       threshold,
