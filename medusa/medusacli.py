@@ -368,9 +368,12 @@ def delete_backup(medusaconfig, backup_name, all_nodes):
 @cli.command(name='get-size', help='Calculate the size of the given backup on the current node')
 @click.option('--backup-name', help='Backup name (repeat for multiple names)', required=True, multiple=True)
 @click.option('--exclude-backup', help='Exclude the files of the given backups from the calculation (repeat for multiple names)', required=False, multiple=True)
+@click.option('--exclude-two-backups', help='Exclude the files of two backups from the calculation', required=False, default=False, is_flag=True)
 @pass_MedusaConfig
-def calculate_size(medusaconfig, backup_name, exclude_backup):
+def calculate_size(medusaconfig, backup_name, exclude_backup, exclude_two_backups):
     """
     Calculate the size of the given backups on the current node
     """
-    medusa.calculate_size.calculate_size(medusaconfig, backup_name, exclude_backup)
+    if exclude_backup:
+        exclude_two_backups = True
+    medusa.calculate_size.calculate_size(medusaconfig, backup_name + exclude_backup, exclude_two_backups)
