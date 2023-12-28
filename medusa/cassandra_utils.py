@@ -30,9 +30,9 @@ from subprocess import PIPE
 
 import yaml
 from cassandra.auth import PlainTextAuthProvider
-from cassandra.cluster import Cluster, ExecutionProfile
+from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
 from cassandra.connection import UnixSocketEndPoint
-from cassandra.policies import WhiteListRoundRobinPolicy
+from cassandra.policies import WhiteListRoundRobinPolicy, RoundRobinPolicy
 from cassandra.util import Version
 from retrying import retry
 
@@ -96,8 +96,16 @@ class CqlSessionProvider(object):
 
         if self._using_unix_socket_endpoint:
             logging.info("Connecting to Cassandra via unix socket endpoint : " + self._unix_socket_path)
+
+            class UnixSocketWhiteListRoundRobinPolicy(WhiteListRoundRobinPolicy):
+                def __init__(self, hosts):
+                    self._allowed_hosts = self._allowed_hosts_resolved = tuple(hosts)
+                    RoundRobinPolicy.__init__(self)
+
+            load_balancing_policy = UnixSocketWhiteListRoundRobinPolicy([self._unix_socket_path])
+            execution_profiles = {EXEC_PROFILE_DEFAULT: ExecutionProfile(load_balancing_policy=load_balancing_policy)}
             cluster = Cluster(contact_points=[UnixSocketEndPoint(self._unix_socket_path)],
-                              execution_profiles=self._execution_profiles)
+                              execution_profiles=execution_profiles)
         else:
             logging.info("Connecting to Cassandra via ip address")
             cluster = Cluster(contact_points=self._ip_addresses,
