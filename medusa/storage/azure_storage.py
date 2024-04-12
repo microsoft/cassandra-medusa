@@ -23,6 +23,7 @@ import os
 import pathlib
 import typing as t
 
+from azure.identity import ManagedIdentityCredential
 from azure.core.credentials import AzureNamedKeyCredential
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import BlobProperties
@@ -43,11 +44,19 @@ class AzureStorage(AbstractStorage):
         credentials_file = Path(config.key_file).expanduser()
         with open(credentials_file, "r") as f:
             credentials_dict = json.loads(f.read())
+
+        self.account_name = credentials_dict["storage_account"]
+
+        if "identity_config" in credentials_dict:
+            self.credentials = ManagedIdentityCredential(
+                identity_config=credentials_dict["identity_config"]
+            )
+        else:
             self.credentials = AzureNamedKeyCredential(
-                name=credentials_dict["storage_account"],
+                name=self.account_name,
                 key=credentials_dict["key"]
             )
-        self.account_name = self.credentials.named_key.name
+
         self.bucket_name = config.bucket_name
 
         self.azure_blob_service_url = self._make_blob_service_url(self.account_name, config)
