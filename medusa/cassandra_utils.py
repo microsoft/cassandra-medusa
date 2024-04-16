@@ -69,7 +69,6 @@ class CqlSessionProvider(object):
         self._cassandra_config = config.cassandra
         self._config = config
         self._native_port = CassandraConfigReader(self._cassandra_config.config_file).native_port
-        self._using_unix_socket_endpoint = evaluate_boolean(self._cassandra_config.using_unix_socket_endpoint)
         self._unix_socket_path = self._cassandra_config.unix_socket_path
 
         if null_if_empty(self._cassandra_config.cql_username) and null_if_empty(self._cassandra_config.cql_password):
@@ -87,11 +86,6 @@ class CqlSessionProvider(object):
                     keyfile=self._cassandra_config.userkey)
             self._ssl_context = ssl_context
 
-        load_balancing_policy = WhiteListRoundRobinPolicy(ip_addresses)
-        self._execution_profiles = {
-            'local': ExecutionProfile(load_balancing_policy=load_balancing_policy)
-        }
-
     def new_session(self, retry=False):
         """
         Creates a new CQL session. If retry is True then attempt to create a CQL session with retry logic. The max
@@ -99,8 +93,8 @@ class CqlSessionProvider(object):
         no session can be created after the max retries is reached, an exception is raised.
          """
 
-        if self._using_unix_socket_endpoint:
-            logging.info("Connecting to Cassandra via unix socket endpoint : " + self._unix_socket_path)
+        if self._unix_socket_path:
+            logging.info("Connecting to Cassandra via unix socket file : " + self._unix_socket_path)
 
             class UnixSocketWhiteListRoundRobinPolicy(WhiteListRoundRobinPolicy):
                 def __init__(self, hosts):
@@ -112,11 +106,13 @@ class CqlSessionProvider(object):
             cluster = Cluster(contact_points=[UnixSocketEndPoint(self._unix_socket_path)],
                               execution_profiles=execution_profiles)
         else:
-            logging.info("Connecting to Cassandra via ip address")
+            logging.info("Connecting to Cassandra via ip addresses : " + str(self._ip_addresses))
+            load_balancing_policy = WhiteListRoundRobinPolicy(self._ip_addresses)
+            execution_profiles = {EXEC_PROFILE_DEFAULT: ExecutionProfile(load_balancing_policy=load_balancing_policy)}
             cluster = Cluster(contact_points=self._ip_addresses,
                               port=int(self._native_port),
                               auth_provider=self._auth_provider,
-                              execution_profiles=self._execution_profiles,
+                              execution_profiles=execution_profiles,
                               ssl_context=self._ssl_context)
 
         if retry:
@@ -169,24 +165,19 @@ class CqlSession(object):
     def session(self):
         return self._session
 
-    def _using_unix_socket(self):
-        return isinstance(self.cluster.contact_points[0], UnixSocketEndPoint)
-
     def _listen_address(self):
-        # if using unix socket endpoint, the listen address is the unix socket path
-        if self._using_unix_socket():
-            return self.cluster.contact_points[0].address
+        host = self.cluster.contact_points[0]
 
-        return socket.gethostbyname(self.cluster.contact_points[0])
+        if isinstance(host, UnixSocketEndPoint):
+            host = socket.gethostname()
 
-    def _ip_address_equals(self, left, right):
-        return left == right or self.hostname_resolver.resolve_fqdn(left) == self.hostname_resolver.resolve_fqdn(right)
+        return socket.gethostbyname(host)
 
     def token(self):
         listen_address = self._listen_address()
         token_map = self.cluster.metadata.token_map
         for token, host in token_map.token_to_host_owner.items():
-            if self._ip_address_equals(host.address, listen_address):
+            if host.address == listen_address:
                 return token.value
         raise RuntimeError('Unable to get current token')
 
@@ -216,13 +207,6 @@ class CqlSession(object):
         def get_token(host_token_pair):
             return host_token_pair[1]
 
-        def resolve_fqdn(address):
-            # if address equals the listen address (namely the unix socket path), return the local fqdn
-            if self._using_unix_socket() and address == self._listen_address():
-                return self.hostname_resolver.resolve_fqdn()
-            else:
-                return self.hostname_resolver.resolve_fqdn(address)
-
         host_token_pairs = sorted(
             [(host, token.value) for token, host in token_map.token_to_host_owner.items()],
             key=get_host_address
@@ -231,7 +215,7 @@ class CqlSession(object):
         host_tokens_pairs = [(host, list(map(get_token, tokens))) for host, tokens in host_tokens_groups]
 
         return {
-            resolve_fqdn(host.address): {
+            self.hostname_resolver.resolve_fqdn(host.address): {
                 'tokens': tokens,
                 'is_up': host.is_up,
                 'rack': host.rack,
