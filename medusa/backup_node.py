@@ -372,7 +372,10 @@ def check_already_uploaded(
         else:
             # safe_table_name is either a table, or a "table.2i_name"
             _, safe_table_name = Storage.sanitize_keyspace_and_table_name(src)
-            item_in_storage = keyspace_files_in_storage.get(safe_table_name, {}).get(src.name, None)
+            table_files_in_storage = keyspace_files_in_storage.get(safe_table_name, {})
+            item_in_storage = [v for (k, v) in table_files_in_storage.items()
+                               if medusa.utils.remove_suffix(k) == src.name]
+            item_in_storage = item_in_storage[0] if len(item_in_storage) > 0 else None
             # object is not in storage
             if item_in_storage is None:
                 needs_backup.append(src)
