@@ -41,4 +41,4 @@ def calculate_size(config, backup_names, exclude_backups):
                 if obj['path'] in size_map:
                     del size_map[obj['path']]
 
-    logging.info("Total size of backups: {} bytes".format(sum(size_map.values())))
+    print("Total size of backups: {} bytes".format(sum(size_map.values())))
