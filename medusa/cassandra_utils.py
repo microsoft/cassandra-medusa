@@ -165,31 +165,33 @@ class CqlSession(object):
     def session(self):
         return self._session
 
-    def _listen_address(self):
-        host = self.cluster.contact_points[0]
-
-        if isinstance(host, UnixSocketEndPoint):
-            host = socket.gethostname()
-
-        return socket.gethostbyname(host)
+    def _resolve_address(self, address):
+        if isinstance(address, UnixSocketEndPoint):
+            address = socket.gethostname()
+        elif isinstance(self.cluster.contact_points[0], UnixSocketEndPoint):
+            unix_socket_path = self.cluster.contact_points[0].address
+            if unix_socket_path == address:
+                address = socket.gethostname()
+        return resolve_name(address)
 
     def token(self):
-        listen_address = self._listen_address()
+        listen_address = self._resolve_address(self.cluster.contact_points[0])
         token_map = self.cluster.metadata.token_map
         for token, host in token_map.token_to_host_owner.items():
-            if host.address == listen_address:
+            if self._resolve_address(host.address) == listen_address:
                 return token.value
         raise RuntimeError('Unable to get current token')
 
     def placement(self):
         logging.debug('Checking placement using dc and rack...')
-        listen_address = self._listen_address()
+        listen_address = self._resolve_address(self.cluster.contact_points[0])
         token_map = self.cluster.metadata.token_map
 
         for host in token_map.token_to_host_owner.values():
             socket_host = self.hostname_resolver.resolve_fqdn(listen_address)
             logging.debug('Checking host {} against {}/{}'.format(host.address, listen_address, socket_host))
-            if host.address == listen_address or self.hostname_resolver.resolve_fqdn(host.address) == socket_host:
+            ip = self._resolve_address(host.address)
+            if ip == listen_address or self.hostname_resolver.resolve_fqdn(ip) == socket_host:
                 return host.datacenter, host.rack
 
         raise RuntimeError('Unable to get current placement')
@@ -215,7 +217,7 @@ class CqlSession(object):
         host_tokens_pairs = [(host, list(map(get_token, tokens))) for host, tokens in host_tokens_groups]
 
         return {
-            self.hostname_resolver.resolve_fqdn(host.address): {
+            self.hostname_resolver.resolve_fqdn(self._resolve_address(host.address)): {
                 'tokens': tokens,
                 'is_up': host.is_up,
                 'rack': host.rack,
