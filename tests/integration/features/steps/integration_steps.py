@@ -1785,5 +1785,4 @@ def rm_tree(pth):
 
 def remove_temporary_mgmtapi_resources():
     for tempDir in Path('/tmp').glob('management-api-*'):
-        if tempDir.is_dir():
-            rm_tree(tempDir)
+        rm_tree(tempDir)
