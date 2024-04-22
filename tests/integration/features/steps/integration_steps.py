@@ -1776,7 +1776,7 @@ def symlink_mgmt_api_jar(version):
 def rm_tree(pth):
     pth = Path(pth)
     for child in pth.glob('*'):
-        if child.is_file() or child.is_symlink():
+        if child.is_file():
             child.unlink()
         else:
             rm_tree(child)
