@@ -1147,7 +1147,8 @@ Feature: Integration tests
     | storage    | client encryption |
     | local      |  with_client_encryption |
 
-    @32 @skip-cassandra-2
+    # skip cassandra 4 because cassandra-driver could not connect to Cassandra via unix socket
+    @32 @skip-cassandra-2 @skip-cassandra-4
     Scenario Outline: Connect to a ccm cluster via unix socket, perform a backup, then verify it
         Given I have a fresh ccm cluster with mgmt api "<client encryption>" named "scenario32"
         Given I am using "<storage>" as storage provider in ccm cluster "<client encryption>" with mgmt api
