@@ -77,3 +77,29 @@ class AzureStorageTest(unittest.TestCase):
                 'https://medusa-unit-test.blob.core.custom.host.net:123/',
                 azure_storage.azure_blob_service_url
             )
+
+    def test_credentials_with_blob_url(self):
+        credentials_file_content_with_identity_config = """
+        {
+          "storage_account": "medusa-unit-test",
+          "key": "randomString==",
+          "blob_url": "https://xxx.blob.host.net/"
+        }
+        """
+        with tempfile.NamedTemporaryFile() as credentials_file:
+            credentials_file.write(credentials_file_content_with_identity_config.encode())
+            credentials_file.flush()
+            config = AttributeDict({
+                'region': 'region-from-config',
+                'storage_provider': 'azure_blobs',
+                'key_file': credentials_file.name,
+                'bucket_name': 'bucket-from-config',
+                'concurrent_transfers': '1',
+                'host': None,
+                'port': None,
+            })
+            azure_storage = AzureStorage(config)
+            self.assertEqual(
+                'https://xxx.blob.host.net/',
+                azure_storage.azure_blob_service_url
+            )
