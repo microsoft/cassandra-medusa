@@ -59,7 +59,10 @@ class AzureStorage(AbstractStorage):
 
         self.bucket_name = config.bucket_name
 
-        self.azure_blob_service_url = self._make_blob_service_url(self.account_name, config)
+        if "blob_url" in credentials_dict:
+            self.azure_blob_service_url = credentials_dict["blob_url"]
+        else:
+            self.azure_blob_service_url = self._make_blob_service_url(self.account_name, config)
 
         # disable chatty loggers
         logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
