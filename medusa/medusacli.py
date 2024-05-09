@@ -106,6 +106,8 @@ def configure_console_logging(verbosity, without_log_timestamp):
 @click.option('--backup-grace-period-in-days', help='Duration for which backup files cannot be deleted from storage')
 @click.option('--ssh-username')
 @click.option('--ssh-key-file')
+@click.option('--token-file')
+@click.option('--schema-file')
 @click.version_option(package_name='cassandra-medusa', message='%(version)s')
 @click.pass_context
 def cli(ctx, verbosity, without_log_timestamp, config_file, **kwargs):
