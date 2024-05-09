@@ -113,7 +113,6 @@ class AzureStorageTest(unittest.TestCase):
             "storage_account": "medusa-unit-test",
             "key": "randomString==",
             "blob_url": "https://xxx.blob.host.net/"
-                        >>>>>>> nova_0.13.13
         }
         """
         with tempfile.NamedTemporaryFile() as credentials_file:
