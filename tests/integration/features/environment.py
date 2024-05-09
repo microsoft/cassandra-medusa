@@ -45,3 +45,5 @@ def after_step(context, step):
 def before_scenario(context, scenario):
     if "skip-cassandra-2" in scenario.effective_tags and context.cassandra_version.startswith("2."):
         scenario.skip("Skipping scenario on Cassandra 2.x")
+    if "skip-cassandra-4" in scenario.effective_tags and context.cassandra_version.startswith("4."):
+        scenario.skip("Skipping scenario on Cassandra 4.x")
