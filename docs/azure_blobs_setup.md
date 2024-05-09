@@ -3,7 +3,9 @@ Azure Blob Storage setup
 
 ### Storage account
 
-Create a new storage account or use an existing one which will be used to store the backups. Ideally, do not enable public access. Under the `Settings`, find `Access keys`. Note the `storageaccountname` and `Key`. Create a file called `medusa-azure-credentials` in the following format:
+Create a new storage account or use an existing one which will be used to store the backups. 
+Ideally, do not enable public access. Under the `Settings`, find `Access keys`. 
+Note the `storageaccountname` and `Key`. Create a file called `medusa-azure-credentials` in the following format:
 
 ```json
 {
@@ -11,6 +13,19 @@ Create a new storage account or use an existing one which will be used to store 
     "key": "YOUR_KEY"
 }
 ```
+
+Instead of using storage key, you can use Azure AD credentials. 
+To do so, the format of the `medusa-azure-credentials` file should be:
+
+```json
+{
+  "storage_account": "YOUR_STORAGE_ACCOUNT_NAME",
+  "identity_config": {
+    "mi_res_id": "MANAGED_IDENTITY_RESOURCE_ID"
+  }
+}
+```
+  
 Place this file on all Apache Cassandra™ nodes running medusa under `/etc/medusa/`and set the rights appropriately so that only users running Medusa can read/modify it.
 
 ### Create a container
