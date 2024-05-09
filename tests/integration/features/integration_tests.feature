@@ -1101,7 +1101,7 @@ Feature: Integration tests
     | s3_us_west_oregon | without_client_encryption |
 
     @30
-    Scenario Outline: Create an differential backup, corrupt it, then fix by doing another backup, and verify it
+    Scenario Outline: Create an differential backup, corrupt it, then do another backup, and verify it
         Given I have a fresh ccm cluster "<client encryption>" running named "scenario30"
         Given I am using "<storage>" as storage provider in ccm cluster "<client encryption>"
         When I create the "test" table with secondary index in keyspace "medusa"
@@ -1111,14 +1111,14 @@ Feature: Integration tests
         And I "delete" a random sstable from "differential" backup "first_backup" in the "test" table in keyspace "medusa"
         Then verifying backup "first_backup" fails
         When I perform a backup in "differential" mode of the node named "second_backup" with md5 checks "disabled"
-        Then I can verify the backup named "first_backup" with md5 checks "enabled" successfully
+        Then verifying backup "first_backup" fails
         Then I can verify the backup named "second_backup" with md5 checks "enabled" successfully
         And I "truncate" a random sstable from "differential" backup "second_backup" in the "test" table in keyspace "medusa"
         Then verifying backup "second_backup" fails
         When I perform a backup in "differential" mode of the node named "fourth_backup" with md5 checks "enabled"
         Then some files from the previous backup were not reuploaded
         Then some files from the previous backup "were" replaced
-        Then I can verify the backup named "second_backup" with md5 checks "enabled" successfully
+        Then verifying backup "second_backup" fails
         Then I can verify the backup named "fourth_backup" with md5 checks "enabled" successfully
         When I delete the backup named "first_backup"
         Then I cannot see the backup named "first_backup" when I list the backups
