@@ -40,7 +40,7 @@ CassandraConfig = collections.namedtuple(
      'sstableloader_bin', 'nodetool_username', 'nodetool_password', 'nodetool_password_file_path', 'nodetool_host',
      'nodetool_executable', 'nodetool_port', 'certfile', 'usercert', 'userkey', 'sstableloader_ts',
      'sstableloader_tspw', 'sstableloader_ks', 'sstableloader_kspw', 'nodetool_ssl', 'resolve_ip_addresses', 'use_sudo',
-     'nodetool_flags', 'cql_k8s_secrets_path', 'nodetool_k8s_secrets_path', 'schema_file', 'token_file']
+     'nodetool_flags', 'cql_k8s_secrets_path', 'nodetool_k8s_secrets_path', 'unix_socket_path', 'schema_file', 'token_file']
 )
 
 SSHConfig = collections.namedtuple(

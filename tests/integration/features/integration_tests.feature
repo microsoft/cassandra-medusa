@@ -1146,3 +1146,23 @@ Feature: Integration tests
     Examples: Local storage
     | storage    | client encryption |
     | local      |  with_client_encryption |
+
+    # skip cassandra 4 because cassandra-driver could not connect to Cassandra via unix socket
+    @32 @skip-cassandra-2 @skip-cassandra-4
+    Scenario Outline: Connect to a ccm cluster via unix socket, perform a backup, then verify it
+        Given I have a fresh ccm cluster with mgmt api "<client encryption>" named "scenario32"
+        Given I am using "<storage>" as storage provider in ccm cluster "<client encryption>" with mgmt api
+        When I create the "test" table in keyspace "medusa"
+        When I load 100 rows in the "medusa.test" table
+        When I run a "ccm node1 nodetool -- -Dcom.sun.jndi.rmiURLParsing=legacy flush" command
+        When I perform a backup in "differential" mode of the node named "first_backup" with md5 checks "disabled"
+        Then the backup index exists
+        Then I can verify the backup named "first_backup" with md5 checks "disabled" successfully
+        Then I can see the backup index entry for "first_backup"
+        Then I shutdown the gRPC server
+        Then I shutdown the mgmt api server
+
+    @local
+    Examples: Local storage
+    | storage           | client encryption |
+    | local_unix_socket_path    |  with_client_encryption |

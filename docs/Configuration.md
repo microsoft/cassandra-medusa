@@ -47,6 +47,8 @@ resolve_ip_addresses = True
 ; Defaults to True
 ;use_sudo = True
 
+;unix_socket_path = <socket path>
+
 [storage]
 storage_provider = <Storage system used for backups>
 ; storage_provider should be either of "local", "google_storage" or "s3"
