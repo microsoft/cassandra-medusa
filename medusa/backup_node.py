@@ -222,7 +222,7 @@ def get_schema_and_tokenmap(cassandra, config):
 
     if not tokenmap:
         with cassandra.new_session() as cql_session:
-            tokenmap = cql_session.get_tokenmap()
+            tokenmap = cql_session.tokenmap()
 
     return schema, tokenmap
 
