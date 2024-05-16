@@ -16,7 +16,7 @@
 
 [tool.poetry]
 name = "cassandra-medusa"
-version = "0.20.2-dev"
+version = "0.22.0-dev"
 description = "Apache Cassandra backup and restore tool"
 authors = ["The Last Pickle <medusa@thelastpickle.com>"]
 license = "Apache"
@@ -35,8 +35,7 @@ packages = [
     { include = "medusa" }
 ]
 include = [
-    { path = "medusa-example.ini" },
-    { path = "bin/medsua-wrapper" }
+    { path = "medusa-example.ini" }
 ]
 
 [project]
@@ -44,6 +43,7 @@ requires-python = ">=3.8,<=3.11"
 
 [tool.poetry.scripts]
 medusa = { reference = "medusa.medusacli:cli", type = "console" }
+medusa-wrapper = { reference = "medusa.scripts.medusa_wrapper:main", type = "console" }
 
 [tool.poetry.dependencies]
 python = "^3.8"
@@ -70,9 +70,9 @@ fasteners = "0.16"
 datadog = "0.47.0"
 botocore = "1.31.75"
 boto3 = "1.28.71"
-dnspython = "2.4.2"
+dnspython = "2.6.1"
 asyncio = "3.4.3"
-aiohttp = "3.9.2"
+aiohttp = "3.9.4"
 gcloud-aio-storage = "9.2.0"
 azure-core = "1.29.4"
 azure-identity = "1.14.0"
