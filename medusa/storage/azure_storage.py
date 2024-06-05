@@ -45,15 +45,13 @@ class AzureStorage(AbstractStorage):
         with open(credentials_file, "r") as f:
             credentials_dict = json.loads(f.read())
 
-        self.account_name = credentials_dict["storage_account"]
-
         if "identity_config" in credentials_dict:
             self.credentials = ManagedIdentityCredential(
                 identity_config=credentials_dict["identity_config"]
             )
         else:
             self.credentials = AzureNamedKeyCredential(
-                name=self.account_name,
+                name=credentials_dict["storage_account"],
                 key=credentials_dict["key"]
             )
 
@@ -62,7 +60,7 @@ class AzureStorage(AbstractStorage):
         if "blob_url" in credentials_dict:
             self.azure_blob_service_url = credentials_dict["blob_url"]
         else:
-            self.azure_blob_service_url = self._make_blob_service_url(self.account_name, config)
+            self.azure_blob_service_url = self._make_blob_service_url(credentials_dict["storage_account"], config)
 
         # disable chatty loggers
         logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
