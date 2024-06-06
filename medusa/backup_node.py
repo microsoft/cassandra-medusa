@@ -229,8 +229,13 @@ def get_schema_and_tokenmap(cassandra, config):
 
 @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
 def get_server_type_and_version(cassandra):
-    with cassandra.new_session() as cql_session:
-        server_type, release_version = cql_session.get_server_type_and_release_version()
+    server_type, release_version = "cassandra", "unknown"
+    try:
+        with cassandra.new_session() as cql_session:
+            server_type, release_version = cql_session.get_server_type_and_release_version()
+    except Exception as e:
+        logging.warning('Error while getting server type and release version: {}'.format(str(e)))
+
     return server_type, release_version
 
 
