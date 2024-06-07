@@ -27,6 +27,7 @@ from azure.identity import ManagedIdentityCredential
 from azure.core.credentials import AzureNamedKeyCredential
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import BlobProperties
+import medusa.utils
 from medusa.storage.abstract_storage import AbstractStorage, AbstractBlob, AbstractBlobMetadata, ObjectDoesNotExistError
 from pathlib import Path
 from retrying import retry
@@ -145,6 +146,7 @@ class AzureStorage(AbstractStorage):
         # the dest variable only points to the table folder, so we need to add the sub-folder
         src_path = Path(src)
         file_path = AbstractStorage.path_maybe_with_parent(dest, src_path)
+        file_path = medusa.utils.remove_suffix(file_path)
 
         if blob.size < int(self.config.multi_part_upload_threshold):
             workers = 1
@@ -185,6 +187,7 @@ class AzureStorage(AbstractStorage):
 
         # check if objects resides in a sub-folder (e.g. secondary index). if it does, use the sub-folder in object path
         object_key = AbstractStorage.path_maybe_with_parent(dest, src_path)
+        object_key = medusa.utils.append_suffix(object_key)
 
         file_size = os.stat(src).st_size
         logging.debug(
