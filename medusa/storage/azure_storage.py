@@ -22,13 +22,15 @@ import logging
 import os
 import pathlib
 import typing as t
+import aiofiles
 
 from azure.core.credentials import AzureNamedKeyCredential
+from azure.identity import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
-from azure.storage.blob import BlobProperties
+from azure.storage.blob import BlobProperties, StandardBlobTier
 from medusa.storage.abstract_storage import AbstractStorage, AbstractBlob, AbstractBlobMetadata, ObjectDoesNotExistError
 from pathlib import Path
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 
 ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
@@ -40,14 +42,23 @@ class AzureStorage(AbstractStorage):
 
     def __init__(self, config):
 
-        credentials_file = Path(config.key_file).expanduser()
-        with open(credentials_file, "r") as f:
-            credentials_dict = json.loads(f.read())
-            self.credentials = AzureNamedKeyCredential(
-                name=credentials_dict["storage_account"],
-                key=credentials_dict["key"]
-            )
-        self.account_name = self.credentials.named_key.name
+        if config.key_file is not None:
+            credentials_file = Path(config.key_file).expanduser()
+            logging.debug(f"Loading identity from credentials file: {credentials_file.absolute()}")
+            with open(credentials_file, "r") as f:
+                credentials_dict = json.loads(f.read())
+                self.credentials = AzureNamedKeyCredential(
+                    name=credentials_dict["storage_account"],
+                    key=credentials_dict["key"]
+                )
+                self.account_name = self.credentials.named_key.name
+        else:
+            logging.debug("No credentials file specified, using DefaultAzureCredential")
+            self.credentials = DefaultAzureCredential()
+            self.account_name = os.environ.get('AZURE_STORAGE_ACCOUNT', None)
+            if self.account_name is None:
+                raise ValueError("No Azure storage account name specified in AZURE_STORAGE_ACCOUNT env variable")
+
         self.bucket_name = config.bucket_name
 
         self.azure_blob_service_url = self._make_blob_service_url(self.account_name, config)
@@ -55,6 +66,8 @@ class AzureStorage(AbstractStorage):
         # disable chatty loggers
         logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
         logging.getLogger('chardet.universaldetector').setLevel(logging.WARNING)
+
+        self.read_timeout = int(config.read_timeout) if 'read_timeout' in dir(config) and config.read_timeout else None
 
         super().__init__(config)
 
@@ -70,7 +83,7 @@ class AzureStorage(AbstractStorage):
         self.azure_blob_service = BlobServiceClient(
             account_url=self.azure_blob_service_url,
             credential=self.credentials,
-            max_block_size=20 * 1024 * 1024,        # 50k 20 MB chunks gives ~1 TB max file size
+            max_block_size=4 * 1024 * 1024,        # 50k 20 MB chunks gives ~1 TB max file size
         )
         self.azure_container_client = self.azure_blob_service.get_container_client(self.bucket_name)
 
@@ -85,12 +98,16 @@ class AzureStorage(AbstractStorage):
 
     async def _list_blobs(self, prefix=None) -> t.List[AbstractBlob]:
         blobs = []
-        async for b_props in self.azure_container_client.list_blobs(name_starts_with=str(prefix)):
+        async for b_props in self.azure_container_client.list_blobs(
+                name_starts_with=str(prefix),
+                timeout=self.read_timeout
+        ):
             blobs.append(AbstractBlob(
                 b_props.name,
                 b_props.size,
                 self._get_blob_hash(b_props),
-                b_props.last_modified)
+                b_props.last_modified,
+                b_props.blob_tier)
             )
         return blobs
 
@@ -104,17 +121,19 @@ class AzureStorage(AbstractStorage):
             md5_hash_str = base64.encodebytes(md5_hash).decode('UTF-8').strip()
         return md5_hash_str
 
-    @retry(stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES, wait_fixed=5000)
+    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5))
     async def _upload_object(self, data: io.BytesIO, object_key: str, headers: t.Dict[str, str]) -> AbstractBlob:
         logging.debug(
             '[Azure Storage] Uploading object from stream -> azure://{}/{}'.format(
                 self.config.bucket_name, object_key
             )
         )
+        storage_class = self.get_storage_class()
         blob_client = await self.azure_container_client.upload_blob(
             name=object_key,
             data=data,
             overwrite=True,
+            standard_blob_tier=StandardBlobTier(storage_class.capitalize()) if storage_class else None,
         )
         blob_properties = await blob_client.get_blob_properties()
         return AbstractBlob(
@@ -122,9 +141,10 @@ class AzureStorage(AbstractStorage):
             blob_properties.size,
             self._get_blob_hash(blob_properties),
             blob_properties.last_modified,
+            blob_properties.blob_tier
         )
 
-    @retry(stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES, wait_fixed=5000)
+    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5))
     async def _download_blob(self, src: str, dest: str):
 
         # _stat_blob throws if the blob does not exist
@@ -150,6 +170,7 @@ class AzureStorage(AbstractStorage):
         downloader = await self.azure_container_client.download_blob(
             blob=object_key,
             max_concurrency=workers,
+            timeout=self.read_timeout,
         )
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
         await downloader.readinto(open(file_path, "wb"))
@@ -167,9 +188,10 @@ class AzureStorage(AbstractStorage):
             blob_properties.size,
             self._get_blob_hash(blob_properties),
             blob_properties.last_modified,
+            blob_properties.blob_tier
         )
 
-    @retry(stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES, wait_fixed=5000)
+    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5))
     async def _upload_blob(self, src: str, dest: str) -> ManifestObject:
         src_path = Path(src)
 
@@ -182,13 +204,14 @@ class AzureStorage(AbstractStorage):
                 src, self.human_readable_size(file_size), self.config.bucket_name, object_key
             )
         )
-
-        with open(src, "rb") as data:
+        storage_class = self.get_storage_class()
+        async with aiofiles.open(src, "rb") as data:
             blob_client = await self.azure_container_client.upload_blob(
                 name=object_key,
                 data=data,
                 overwrite=True,
                 max_concurrency=16,
+                standard_blob_tier=StandardBlobTier(storage_class.capitalize()) if storage_class else None,
             )
         blob_properties = await blob_client.get_blob_properties()
         mo = ManifestObject(
@@ -206,10 +229,11 @@ class AzureStorage(AbstractStorage):
         downloader = await self.azure_container_client.download_blob(
             blob=blob.name,
             max_concurrency=1,
+            timeout=self.read_timeout,
         )
         return await downloader.readall()
 
-    @retry(stop_max_attempt_number=MAX_UP_DOWN_LOAD_RETRIES, wait_fixed=5000)
+    @retry(stop=stop_after_attempt(MAX_UP_DOWN_LOAD_RETRIES), wait=wait_fixed(5000))
     async def _delete_object(self, obj: AbstractBlob):
         await self.azure_container_client.delete_blob(obj.name, delete_snapshots='include')
 
@@ -219,7 +243,7 @@ class AzureStorage(AbstractStorage):
         # if we ever start to support KMS in Azure, here we'd have to check for the encryption key id
         sse_enabled = False
         sse_key_id = None
-        return AbstractBlobMetadata(blob_key, sse_enabled, sse_key_id)
+        return AbstractBlobMetadata(blob_key, sse_enabled, sse_key_id, None)
 
     @staticmethod
     def blob_matches_manifest(blob, object_in_manifest, enable_md5_checks=False):
@@ -248,13 +272,10 @@ class AzureStorage(AbstractStorage):
         if not actual_hash:
             return sizes_match
 
+        actual_equals_encoded_in_manifest = actual_hash == base64.b64decode(hash_in_manifest).hex()
+        manifest_equals_encoded_in_actual = hash_in_manifest == base64.b64decode(actual_hash).hex()
         hashes_match = (
-            # and perhaps we need the to check for match even without base64 encoding
-            actual_hash == hash_in_manifest
-            # this case comes from comparing blob hashes to manifest entries (in context of GCS)
-            or actual_hash == base64.b64decode(hash_in_manifest).hex()
-            # this comes from comparing files to a cache
-            or hash_in_manifest == base64.b64decode(actual_hash).hex()
+            actual_hash == hash_in_manifest or actual_equals_encoded_in_manifest or manifest_equals_encoded_in_actual
         )
 
         return sizes_match and hashes_match

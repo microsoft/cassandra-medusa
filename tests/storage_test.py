@@ -42,6 +42,8 @@ class AttributeDict(dict):
 
 
 class StorageTest(unittest.TestCase):
+    TEST_FILE_CONTENT = "content of the test file1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.local_storage_dir = "/tmp/medusa_local_storage"
@@ -85,13 +87,13 @@ class StorageTest(unittest.TestCase):
         self.storage = Storage(config=self.config.storage)
 
     def test_add_object_from_string(self):
-        file_content = "content of the test file"
+        file_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test1/file.txt", file_content)
         self.assertEqual(self.storage.storage_driver.get_blob_content_as_string("test1/file.txt"), file_content)
 
     def test_download_blobs(self):
         files_to_download = list()
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         file2_content = "content of the test file2"
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         files_to_download.append("test_download_blobs1/file1.txt")
@@ -102,7 +104,7 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(len(os.listdir(self.local_storage_dir)), 2)
 
     def test_list_objects(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         file2_content = "content of the test file2"
         file3_content = ""
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
@@ -114,26 +116,26 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(len(one_object), 1)
 
     def test_read_blob(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         objects = self.storage.storage_driver.list_objects("test_download_blobs1")
         object_content = self.storage.storage_driver.read_blob_as_string(objects[0])
         self.assertEqual(object_content, file1_content)
 
     def test_get_blob(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         obj = self.storage.storage_driver.get_blob("test_download_blobs1/file1.txt")
         self.assertEqual(obj.name, "test_download_blobs1/file1.txt")
 
     def test_read_blob_as_bytes(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         object_content = self.storage.storage_driver.get_blob_content_as_bytes("test_download_blobs1/file1.txt")
-        self.assertEqual(object_content, b"content of the test file1")
+        self.assertEqual(object_content, self.TEST_FILE_CONTENT.encode())
 
     def test_verify_hash(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         manifest = self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         obj = self.storage.storage_driver.get_blob("test_download_blobs1/file1.txt")
         self.assertEqual(manifest.MD5, obj.hash)
@@ -194,7 +196,7 @@ class StorageTest(unittest.TestCase):
             self.assertNotEqual(digest_full, AbstractStorage.generate_md5_hash(tf.name, block_size=0))
 
     def test_get_object_datetime(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         obj = self.storage.storage_driver.get_blob("test_download_blobs1/file1.txt")
         self.assertEqual(
@@ -366,7 +368,7 @@ class StorageTest(unittest.TestCase):
     def test_list_files_per_table_with_prefix(self):
 
         def fake_blob(s):
-            return AbstractBlob(s, 0, '0', datetime.now())
+            return AbstractBlob(s, 0, '0', datetime.now(), None)
 
         def fake_mo(s):
             return ManifestObject(s, 0, '0')
@@ -449,6 +451,11 @@ class StorageTest(unittest.TestCase):
             self.storage.sanitize_keyspace_and_table_name(p)
         )
 
+    def test_get_table_prefix(self):
+        self.assertEqual('localhost/data/', self.storage._get_table_prefix(None, 'localhost'))
+        self.assertEqual('localhost/data/', self.storage._get_table_prefix('', 'localhost'))
+        self.assertEqual('prefix/localhost/data/', self.storage._get_table_prefix('prefix', 'localhost'))
+
 
 def make_node_backup(storage, name, backup_date, differential=False, fqdn="localhost"):
     if differential is True:
@@ -464,6 +471,20 @@ def make_node_backup(storage, name, backup_date, differential=False, fqdn="local
                       started_timestamp=backup_date.timestamp(), finished_timestamp=backup_date.timestamp())
 
 
+def make_unfinished_node_backup(storage, name, backup_date, differential=False, fqdn="localhost"):
+    if differential is True:
+        differential_blob = make_blob("localhost/{}/meta/differential".format(name), backup_date.timestamp())
+    else:
+        differential_blob = None
+    tokenmap_blob = make_blob("localhost/{}/meta/tokenmap.json".format(name), backup_date.timestamp())
+    schema_blob = make_blob("localhost/{}/meta/schema.cql".format(name), backup_date.timestamp())
+    manifest_blob = None
+    return NodeBackup(storage=storage, fqdn=fqdn, name=str(name),
+                      differential_blob=differential_blob, manifest_blob=manifest_blob,
+                      tokenmap_blob=tokenmap_blob, schema_blob=schema_blob,
+                      started_timestamp=backup_date.timestamp(), finished_timestamp=None)
+
+
 def make_cluster_backup(storage, name, backup_date, nodes, differential=False):
     node_backups = list()
     for node in nodes:
@@ -474,7 +495,7 @@ def make_cluster_backup(storage, name, backup_date, nodes, differential=False):
 def make_blob(blob_name, blob_date):
     checksum = hashlib.md5()
     checksum.update(os.urandom(4))
-    return AbstractBlob(blob_name, randrange(100), checksum.hexdigest(), datetime.fromtimestamp(blob_date))
+    return AbstractBlob(blob_name, randrange(100), checksum.hexdigest(), datetime.fromtimestamp(blob_date), None)
 
 
 if __name__ == '__main__':

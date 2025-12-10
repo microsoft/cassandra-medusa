@@ -58,7 +58,7 @@ class Server:
         ])
         logging.info("GRPC server initialized")
 
-    def shutdown(self, signum, frame):
+    def shutdown(self):
         logging.info("Shutting down GRPC server")
         handle_backup_removal_all()
         asyncio.get_event_loop().run_until_complete(self.grpc_server.stop(0))
@@ -70,8 +70,9 @@ class Server:
         medusa_pb2_grpc.add_MedusaServicer_to_server(MedusaService(config), self.grpc_server)
         health_pb2_grpc.add_HealthServicer_to_server(grpc_health.v1.health.HealthServicer(), self.grpc_server)
 
-        logging.info('Starting server. Listening on port 50051.')
-        self.grpc_server.add_insecure_port('[::]:50051')
+        grpc_port = int(self.medusa_config.grpc.port)
+        logging.info(f"Starting server. Listening on port {grpc_port}.")
+        self.grpc_server.add_insecure_port(f"[::]:{grpc_port}")
         await self.grpc_server.start()
 
         if not self.testing:
@@ -179,31 +180,54 @@ class MedusaService(medusa_pb2_grpc.MedusaServicer):
         response = medusa_pb2.BackupStatusResponse()
         try:
             with Storage(config=self.storage_config) as storage:
-                # find the backup
                 backup = storage.get_node_backup(fqdn=storage.config.fqdn, name=request.backupName)
                 if backup.started is None:
                     raise KeyError
-                # work out the timings
+
                 response.startTime = datetime.fromtimestamp(backup.started).strftime(TIMESTAMP_FORMAT)
                 if backup.finished:
                     response.finishTime = datetime.fromtimestamp(backup.finished).strftime(TIMESTAMP_FORMAT)
                 else:
                     response.finishTime = ""
-                BackupMan.register_backup(request.backupName, is_async=False, overwrite_existing=False)
-                status = BackupMan.STATUS_UNKNOWN
-                if backup.started:
-                    status = BackupMan.STATUS_IN_PROGRESS
-                if backup.finished:
-                    status = BackupMan.STATUS_SUCCESS
+
+                status = self._get_backup_status(request.backupName, backup)
                 BackupMan.update_backup_status(request.backupName, status)
-                # record the status
                 record_status_in_response(response, request.backupName)
+
         except KeyError:
             context.set_details("backup <{}> does not exist".format(request.backupName))
             context.set_code(grpc.StatusCode.NOT_FOUND)
             response.status = medusa_pb2.StatusType.UNKNOWN
 
         return response
+
+    def _determine_backup_status(self, backup_name, backup, future):
+        if future is None:
+            return BackupMan.STATUS_FAILED if not backup.finished else BackupMan.STATUS_SUCCESS
+
+        if not future.done():
+            return BackupMan.STATUS_IN_PROGRESS
+
+        try:
+            future.result()
+            return BackupMan.STATUS_FAILED if not backup.finished else BackupMan.STATUS_SUCCESS
+        except Exception as e:
+            logging.error(f"Backup {backup_name} has failed: {e}")
+            return BackupMan.STATUS_FAILED
+
+    def _get_backup_status(self, backup_name, backup):
+        BackupMan.register_backup(backup_name, is_async=False, overwrite_existing=False)
+        future = BackupMan.get_backup_future(backup_name)
+
+        status = self._determine_backup_status(backup_name, backup, future)
+
+        if status == BackupMan.STATUS_UNKNOWN:
+            if backup.started:
+                status = BackupMan.STATUS_IN_PROGRESS
+            if backup.finished:
+                status = BackupMan.STATUS_SUCCESS
+
+        return status
 
     def GetBackup(self, request, context):
         response = medusa_pb2.GetBackupResponse()
@@ -243,7 +267,7 @@ class MedusaService(medusa_pb2_grpc.MedusaServicer):
         response.name = request.name
 
         if not BackupMan.is_active():
-            logging.warning(f"Backup manager has no backups on record")
+            logging.warning("Backup manager has no backups on record")
             response.status = medusa_pb2.StatusType.FAILED
             return response
 
