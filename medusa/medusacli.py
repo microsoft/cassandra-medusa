@@ -49,6 +49,7 @@ import medusa.restore_node
 import medusa.status
 import medusa.verify
 import medusa.fetch_tokenmap
+import medusa.calculate_size
 
 pass_MedusaConfig = click.make_pass_decorator(medusa.config.MedusaConfig)
 
@@ -105,6 +106,8 @@ def configure_console_logging(verbosity, without_log_timestamp):
 @click.option('--backup-grace-period-in-days', help='Duration for which backup files cannot be deleted from storage')
 @click.option('--ssh-username')
 @click.option('--ssh-key-file')
+@click.option('--token-file')
+@click.option('--schema-file')
 @click.version_option(package_name='cassandra-medusa', message='%(version)s')
 @click.pass_context
 def cli(ctx, verbosity, without_log_timestamp, config_file, **kwargs):
@@ -364,3 +367,16 @@ def delete_backup(medusaconfig, backup_name, all_nodes):
     Delete the given backup on the current node (or on all nodes)
     """
     medusa.purge.delete_backup(medusaconfig, backup_name, all_nodes)
+
+
+@cli.command(name='get-size', help='Calculate the size of the given backup on the current node')
+@click.option('--backup-name', help='Backup name (repeat for multiple names)', required=True, multiple=True)
+@click.option('--exclude-backup',
+              help='Exclude the files of the given backups from the calculation (repeat for multiple names)',
+              required=False, multiple=True)
+@pass_MedusaConfig
+def calculate_size(medusaconfig, backup_name, exclude_backup):
+    """
+    Calculate the size of the given backups on the current node
+    """
+    medusa.calculate_size.calculate_size(medusaconfig, backup_name, exclude_backup)

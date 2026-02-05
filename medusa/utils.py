@@ -14,6 +14,8 @@
 # limitations under the License.
 
 import logging
+import secrets
+import string
 import sys
 import pathlib
 import traceback
@@ -21,7 +23,6 @@ import tempfile
 
 
 class MedusaTempFile(object):
-
     _tempfile = None
     _tempfile_path = f'{tempfile.gettempdir()}/medusa_backup_in_progress'
 
@@ -85,3 +86,21 @@ def null_if_empty(value):
     if (str(value) == ''):
         return None
     return value
+
+
+SUFFIX_LENGTH = 32
+
+
+def append_suffix(file_name):
+    alphabet = string.ascii_letters + string.digits
+    suffix = ''.join(secrets.choice(alphabet) for _ in range(SUFFIX_LENGTH))
+
+    return file_name + suffix
+
+
+def remove_suffix(file_name):
+    # if ext is longer than SUFFIX_LENGTH characters, it means SUFFIX_LENGTH characters suffix was appended
+    if len(file_name.split('.')[-1]) >= SUFFIX_LENGTH:
+        file_name = file_name[:len(file_name) - SUFFIX_LENGTH]
+
+    return file_name

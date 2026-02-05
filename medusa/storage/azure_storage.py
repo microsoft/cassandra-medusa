@@ -23,9 +23,11 @@ import os
 import pathlib
 import typing as t
 
+from azure.identity import ManagedIdentityCredential
 from azure.core.credentials import AzureNamedKeyCredential
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import BlobProperties
+import medusa.utils
 from medusa.storage.abstract_storage import AbstractStorage, AbstractBlob, AbstractBlobMetadata, ObjectDoesNotExistError
 from pathlib import Path
 from retrying import retry
@@ -43,14 +45,23 @@ class AzureStorage(AbstractStorage):
         credentials_file = Path(config.key_file).expanduser()
         with open(credentials_file, "r") as f:
             credentials_dict = json.loads(f.read())
+
+        if "identity_config" in credentials_dict:
+            self.credentials = ManagedIdentityCredential(
+                identity_config=credentials_dict["identity_config"]
+            )
+        else:
             self.credentials = AzureNamedKeyCredential(
                 name=credentials_dict["storage_account"],
                 key=credentials_dict["key"]
             )
-        self.account_name = self.credentials.named_key.name
+
         self.bucket_name = config.bucket_name
 
-        self.azure_blob_service_url = self._make_blob_service_url(self.account_name, config)
+        if "blob_url" in credentials_dict:
+            self.azure_blob_service_url = credentials_dict["blob_url"]
+        else:
+            self.azure_blob_service_url = self._make_blob_service_url(credentials_dict["storage_account"], config)
 
         # disable chatty loggers
         logging.getLogger('azure.core.pipeline.policies.http_logging_policy').setLevel(logging.WARNING)
@@ -135,6 +146,7 @@ class AzureStorage(AbstractStorage):
         # the dest variable only points to the table folder, so we need to add the sub-folder
         src_path = Path(src)
         file_path = AbstractStorage.path_maybe_with_parent(dest, src_path)
+        file_path = medusa.utils.remove_suffix(file_path)
 
         if blob.size < int(self.config.multi_part_upload_threshold):
             workers = 1
@@ -175,6 +187,7 @@ class AzureStorage(AbstractStorage):
 
         # check if objects resides in a sub-folder (e.g. secondary index). if it does, use the sub-folder in object path
         object_key = AbstractStorage.path_maybe_with_parent(dest, src_path)
+        object_key = medusa.utils.append_suffix(object_key)
 
         file_size = os.stat(src).st_size
         logging.debug(

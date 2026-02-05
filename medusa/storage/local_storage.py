@@ -22,6 +22,7 @@ import pathlib
 import typing as t
 from pathlib import Path
 
+import medusa.utils
 from medusa.storage.abstract_storage import AbstractStorage, AbstractBlob, ManifestObject, ObjectDoesNotExistError
 
 
@@ -100,6 +101,7 @@ class LocalStorage(AbstractStorage):
 
         src_path = Path(src)
         dest_file = AbstractStorage.path_maybe_with_parent(dest, src_path)
+        dest_file = medusa.utils.remove_suffix(dest_file)
 
         logging.debug(
             '[Local Storage] Downloading {} -> {}'.format(
@@ -121,7 +123,7 @@ class LocalStorage(AbstractStorage):
         src_path = Path(src)
 
         # check if objects resides in a sub-folder (e.g. secondary index). if it does, use the sub-folder in object path
-        dest_file = self.root_dir / AbstractStorage.path_maybe_with_parent(dest, src_path)
+        dest_file = self.root_dir / medusa.utils.append_suffix(AbstractStorage.path_maybe_with_parent(dest, src_path))
 
         file_size = os.stat(src_path).st_size
         logging.debug(

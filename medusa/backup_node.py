@@ -30,8 +30,10 @@ from medusa.backup_manager import BackupMan
 from medusa.cassandra_utils import Cassandra
 from medusa.index import add_backup_start_to_index, add_backup_finish_to_index, set_latest_backup_in_index
 from medusa.monitoring import Monitoring
+from medusa.network.hostname_resolver import HostnameResolver
 from medusa.storage import Storage, format_bytes_str, NodeBackup
 from medusa.storage.abstract_storage import ManifestObject
+from medusa.utils import evaluate_boolean
 
 
 def throttle_backup():
@@ -144,7 +146,7 @@ def start_backup(storage, node_backup, cassandra, differential_mode, stagger_tim
         logging.warning("Throttling backup impossible. It's probable that ionice is not available.")
 
     logging.info('Saving tokenmap and schema')
-    schema, tokenmap = get_schema_and_tokenmap(cassandra)
+    schema, tokenmap = get_schema_and_tokenmap(cassandra, config)
     node_backup.schema = schema
     node_backup.tokenmap = json.dumps(tokenmap)
 
@@ -195,17 +197,45 @@ def start_backup(storage, node_backup, cassandra, differential_mode, stagger_tim
 # Wait 2^i * 10 seconds between each retry, up to 2 minutes between attempts, which is right after the
 # attempt on which it waited for 60 seconds
 @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
-def get_schema_and_tokenmap(cassandra):
-    with cassandra.new_session() as cql_session:
-        schema = cql_session.dump_schema()
-        tokenmap = cql_session.tokenmap()
+def get_schema_and_tokenmap(cassandra, config):
+    schema, tokenmap = "", {}
+
+    if config.cassandra.schema_file:
+        with open(config.cassandra.schema_file, "r") as f:
+            schema = f.read()
+
+    if config.cassandra.token_file:
+        hostname_resolver = HostnameResolver(
+            resolve_addresses=evaluate_boolean(config.cassandra.resolve_ip_addresses),
+            k8s_mode=evaluate_boolean(config.kubernetes.enabled if config.kubernetes else False)
+        )
+        with open(config.cassandra.token_file, "r") as f:
+            tokenmap = json.load(f)
+            tokenmap = {
+                hostname_resolver.resolve_fqdn(ip): value
+                for ip, value in tokenmap.items()
+            }
+
+    if not schema:
+        with cassandra.new_session() as cql_session:
+            schema = cql_session.dump_schema()
+
+    if not tokenmap:
+        with cassandra.new_session() as cql_session:
+            tokenmap = cql_session.tokenmap()
+
     return schema, tokenmap
 
 
 @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
 def get_server_type_and_version(cassandra):
-    with cassandra.new_session() as cql_session:
-        server_type, release_version = cql_session.get_server_type_and_release_version()
+    server_type, release_version = "cassandra", "unknown"
+    try:
+        with cassandra.new_session() as cql_session:
+            server_type, release_version = cql_session.get_server_type_and_release_version()
+    except Exception as e:
+        logging.warning('Error while getting server type and release version: {}'.format(str(e)))
+
     return server_type, release_version
 
 
@@ -372,7 +402,10 @@ def check_already_uploaded(
         else:
             # safe_table_name is either a table, or a "table.2i_name"
             _, safe_table_name = Storage.sanitize_keyspace_and_table_name(src)
-            item_in_storage = keyspace_files_in_storage.get(safe_table_name, {}).get(src.name, None)
+            table_files_in_storage = keyspace_files_in_storage.get(safe_table_name, {})
+            item_in_storage = [v for (k, v) in table_files_in_storage.items()
+                               if medusa.utils.remove_suffix(k) == src.name]
+            item_in_storage = item_in_storage[0] if len(item_in_storage) > 0 else None
             # object is not in storage
             if item_in_storage is None:
                 needs_backup.append(src)
