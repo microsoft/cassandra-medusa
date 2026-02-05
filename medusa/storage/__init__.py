@@ -20,7 +20,10 @@ import pathlib
 import re
 import typing as t
 
-from retrying import retry
+
+from tenacity import retry
+from tenacity.stop import stop_after_attempt
+from tenacity.wait import wait_exponential
 
 import medusa.index
 
@@ -106,7 +109,7 @@ class Storage(object):
     def config(self):
         return self._config
 
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def get_node_backup(self, *, fqdn, name, differential_mode=False):
         return NodeBackup(
             storage=self,
@@ -487,12 +490,16 @@ class Storage(object):
         keyspace, table = Storage.sanitize_keyspace_and_table_name(p)
         return keyspace, table, manifest_object
 
-    def list_files_per_table(self) -> t.Dict[str, t.Dict[str, t.Set[ManifestObject]]]:
-        if self.config.prefix != '':
-            prefix = f"{self.config.prefix}/"
+    @staticmethod
+    def _get_table_prefix(config_prefix, fqdn):
+        if config_prefix is not None and config_prefix != '':
+            prefix = f"{config_prefix}/"
         else:
             prefix = ""
-        fdns_data_prefix = f"{prefix}{self.config.fqdn}/data/"
+        return f"{prefix}{fqdn}/data/"
+
+    def list_files_per_table(self) -> t.Dict[str, t.Dict[str, t.Set[ManifestObject]]]:
+        fdns_data_prefix = self._get_table_prefix(self.config.prefix, self.config.fqdn)
         all_blobs: t.List[AbstractBlob] = self.storage_driver.list_blobs(prefix=fdns_data_prefix)
         all_files = [ManifestObject(blob.name, blob.size, blob.hash) for blob in all_blobs]
         keyspace_table_mo_tuples = map(Storage.get_keyspace_and_table, all_files)

@@ -54,13 +54,29 @@ storage_provider = <Storage system used for backups>
 ; storage_provider should be either of "local", "google_storage" or "s3"
 region = <Region hosting the storage>
 
+; Storage class to use when uploading objects.
+; Use a value specific to chosen `storage_provider` that supports both reads and writes (eg S3's GLACIER and Azure's ARCHIVE won't work).
+; If not specified, we default to the 'hottest' class (STANDARD, STANDARD, HOT for GCP, AWS, AZURE respectively).
+; Supported values:
+; AWS S3: STANDARD | REDUCED_REDUNDANCY | STANDARD_IA | ONEZONE_IA | INTELLIGENT_TIERING
+;    GCP: STANDARD |        Unsupported | Unsupported | Unsupported
+;  AZURE:      HOT |               COOL |        COLD
+; https://aws.amazon.com/s3/storage-classes/
+; https://cloud.google.com/storage/docs/storage-classes
+; https://learn.microsoft.com/en-us/azure/storage/blobs/access-tiers-overview
+; storage_class = <Storage Class Name used to store backups>
+
 ; Name of the bucket used for storing backups
 bucket_name = cassandra_backups
 
 ; storage_provider should be "s3"
 kms_id = <ARN of KMS key used for server-side bucket encryption>
 
+; storage_provider should be "s3"
+sse_c_key = <256-bit, base64-encoded encryption key for server-side encryption with customer-provided keys>
+
 ; JSON key file for service account with access to GCS bucket or AWS credentials file (home-dir/.aws/credentials)
+; optional if using GCS (see ./Docs/gcs_setup.md)
 key_file = /etc/medusa/credentials
 
 ; Path of the local storage bucket (used only with 'local' storage provider)
@@ -80,7 +96,14 @@ max_backup_count = 0
 ; Used to throttle S3 backups/restores:
 transfer_max_bandwidth = 50MB/s
 
-; Max number of downloads/uploads. Not used by the GCS backend.
+; Regardless of the storage provider, determines the number of files to process in parallel when uploading or downloading.
+; Each group of concurrently processed files has to have all files processed before the next group starts
+; (so the groups are synchronous, example).
+; Then there is the storage-provider specific behaviour:
+; - For Google, it has no extra meaning. 
+; - For Azure, we pass it to the SDK library we use if the file is bigger than the multipart threshold (100MB in your case). 
+; - For S3, this controls the size of the executor we submit transfer tasks into. We do not propagate is to the 
+;   boto's concurrency parameter.
 concurrent_transfers = 1
 
 ; Size over which S3 uploads will be using the awscli with multi part uploads. Defaults to 100MB.
@@ -112,13 +135,17 @@ backup_grace_period_in_days = 10
 ;aws_cli_path = <Location of the aws cli binary if not in PATH>
 
 [monitoring]
-;monitoring_provider = <Provider used for sending metrics. Currently either of "ffwd" or "local">
+;monitoring_provider = <Provider used for sending metrics. Currently just "local">
 
 [ssh]
 ;username = <SSH username to use for restoring clusters>
 ;key_file = <SSH key for use for restoring clusters. Expected in PEM unencrypted format.>
-;port = <SSH port for use for restoring clusters. Default to port 22.
+;port = <SSH port for use for restoring clusters. Default to port 22.>
 ;cert_file = <Path of public key signed certificate file to use for authentication. The corresponding private key must also be provided via key_file parameter>
+;keepalive_seconds = <seconds between ssh keepalive messages to the ssh server. Default to 60 seconds. Due to a limitation in parallel-ssh, if 'cert_file' is defined, then 'keepalive_seconds' will be ignored and no keep alive messages will be sent>
+;use_pty = <Boolean: Allocates pseudo-terminal. Default to False. Useful if sudo settings require a tty>
+; Enables the usage of a 'login' shell which, among other things, loads user's profile files.
+;login_shell = False
 
 [checks]
 ;health_check = <Which ports to check when verifying a node restored properly. Options are 'cql' (default), 'thrift', 'all'.>
@@ -146,6 +173,7 @@ backup_grace_period_in_days = 10
 ; Set to true when running in grpc server mode.
 ; Allows to propagate the exceptions instead of exiting the program.
 ;enabled = False
+;port = <grpc port the server listens to. Defaults to port 50051.>
 
 [kubernetes]
 ; The following settings are only intended to be configured if Medusa is running in containers, preferably in Kubernetes.

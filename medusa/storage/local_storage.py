@@ -21,6 +21,7 @@ import os
 import pathlib
 import typing as t
 from pathlib import Path
+import aiofiles
 
 import medusa.utils
 from medusa.storage.abstract_storage import AbstractStorage, AbstractBlob, ManifestObject, ObjectDoesNotExistError
@@ -41,14 +42,16 @@ class LocalStorage(AbstractStorage):
         super().__init__(config)
 
     def connect(self):
+        # nothing to connect when running locally
         pass
 
     def disconnect(self):
+        # nothing to disconnect when running locally
         pass
 
     async def _list_blobs(self, prefix=None):
         if prefix is None:
-            paths = [p for p in self.root_dir.glob('**/*')]
+            paths = list(self.root_dir.glob('**/*'))
         else:
             paths = [
                 p for p in self.root_dir.glob('**/*')
@@ -60,8 +63,9 @@ class LocalStorage(AbstractStorage):
             AbstractBlob(
                 str(p.relative_to(self.root_dir)),
                 os.stat(self.root_dir / p).st_size,
-                self._md5(self.root_dir / p),
-                datetime.datetime.fromtimestamp(os.stat(self.root_dir / p).st_mtime)
+                None,   # was self._md5(self.root_dir / p),  see Task1 for issue #829
+                datetime.datetime.fromtimestamp(os.stat(self.root_dir / p).st_mtime),
+                None
             )
             for p in paths if not p.is_dir()
         ]
@@ -80,20 +84,21 @@ class LocalStorage(AbstractStorage):
         object_path = self.root_dir / object_key
         object_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(object_path, 'wb') as f:
+        async with aiofiles.open(object_path, 'wb') as f:
             md5 = hashlib.md5()
             while True:
                 chunk = data.read(BUFFER_SIZE)
                 if not chunk:
                     break
                 md5.update(chunk)
-                f.write(chunk)
+                await f.write(chunk)
 
         return AbstractBlob(
             object_key,
             os.stat(object_path).st_size,
             md5.hexdigest(),
-            datetime.datetime.fromtimestamp(os.stat(object_path).st_mtime)
+            datetime.datetime.fromtimestamp(os.stat(object_path).st_mtime),
+            None
         )
 
     async def _download_blob(self, src: str, dest: str):
@@ -109,14 +114,14 @@ class LocalStorage(AbstractStorage):
             )
         )
 
-        with open(src_file, 'rb') as f:
+        async with aiofiles.open(src_file, 'rb') as f:
             Path(dest_file).parent.mkdir(parents=True, exist_ok=True)
-            with open(dest_file, 'wb') as d:
+            async with aiofiles.open(dest_file, 'wb') as d:
                 while True:
-                    data = f.read(BUFFER_SIZE)
+                    data = await f.read(BUFFER_SIZE)
                     if not data:
                         break
-                    d.write(data)
+                    await d.write(data)
 
     async def _upload_blob(self, src: str, dest: str) -> ManifestObject:
 
@@ -136,14 +141,14 @@ class LocalStorage(AbstractStorage):
 
         md5 = hashlib.md5()
 
-        with open(src_path, 'rb') as f:
+        async with aiofiles.open(src_path, 'rb') as f:
             dest_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(dest_file, 'wb') as d:
+            async with aiofiles.open(dest_file, 'wb') as d:
                 while True:
-                    data = f.read(BUFFER_SIZE)
+                    data = await f.read(BUFFER_SIZE)
                     if not data:
                         break
-                    d.write(data)
+                    await d.write(data)
                     md5.update(data)
 
         return ManifestObject(
@@ -162,13 +167,14 @@ class LocalStorage(AbstractStorage):
             str(object_key),
             os.stat(object_path).st_size,
             self._md5(object_path),
-            datetime.datetime.fromtimestamp(os.stat(object_path).st_mtime)
+            datetime.datetime.fromtimestamp(os.stat(object_path).st_mtime),
+            None
         )
 
     async def _read_blob_as_bytes(self, blob: AbstractBlob) -> bytes:
         object_path = self.root_dir / blob.name
-        with open(object_path, 'rb') as f:
-            return f.read()
+        async with aiofiles.open(object_path, 'rb') as f:
+            return await f.read()
 
     async def _delete_object(self, obj: AbstractBlob):
         object_path = self.root_dir / obj.name

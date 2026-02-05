@@ -5,8 +5,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 import tempfile
 import unittest
+
+from azure.core.credentials import AzureNamedKeyCredential
+from azure.identity import DefaultAzureCredential
 
 from medusa.storage.azure_storage import AzureStorage
 from tests.storage.abstract_storage_test import AttributeDict
@@ -35,6 +39,7 @@ class AzureStorageTest(unittest.TestCase):
                 'concurrent_transfers': '1',
                 'host': None,
                 'port': None,
+                'read_timeout': 60,
             })
             azure_storage = AzureStorage(config)
             self.assertTrue(isinstance(azure_storage.credentials, AzureNamedKeyCredential))
@@ -57,8 +62,10 @@ class AzureStorageTest(unittest.TestCase):
                 'concurrent_transfers': '1',
                 'host': 'custom.host.net',
                 'port': None,
+                'read_timeout': 60,
             })
             azure_storage = AzureStorage(config)
+            self.assertIsInstance(azure_storage.credentials, AzureNamedKeyCredential)
             self.assertEqual(
                 'https://medusa-unit-test.blob.core.custom.host.net/',
                 azure_storage.azure_blob_service_url
@@ -76,13 +83,16 @@ class AzureStorageTest(unittest.TestCase):
                 'concurrent_transfers': '1',
                 'host': 'custom.host.net',
                 'port': 123,
+                'read_timeout': 60,
             })
             azure_storage = AzureStorage(config)
+            self.assertIsInstance(azure_storage.credentials, AzureNamedKeyCredential)
             self.assertEqual(
                 'https://medusa-unit-test.blob.core.custom.host.net:123/',
                 azure_storage.azure_blob_service_url
             )
 
+<<<<<<< HEAD
     def test_credentials_with_blob_url(self):
         credentials_file_content_with_identity_config = """
         {
@@ -132,3 +142,24 @@ class AzureStorageTest(unittest.TestCase):
             })
             azure_storage = AzureStorage(config)
             self.assertTrue(isinstance(azure_storage.credentials, ManagedIdentityCredential))
+=======
+    def test_use_default_azure_credentials(self):
+        config = AttributeDict({
+            'region': 'region-from-config',
+            'storage_provider': 'azure_blobs',
+            'bucket_name': 'bucket-from-config',
+            'concurrent_transfers': '1',
+            'host': None,
+            'port': None,
+            'read_timeout': 60,
+            'key_file': None,
+        })
+        os.environ['AZURE_STORAGE_ACCOUNT'] = 'testAccount'
+        azure_storage = AzureStorage(config)
+        self.assertIsInstance(azure_storage.credentials, DefaultAzureCredential)
+        # we need the account name for making the connection url
+        self.assertEqual(
+            'https://testAccount.blob.core.windows.net/',
+            azure_storage.azure_blob_service_url
+        )
+>>>>>>> lastpickle/master

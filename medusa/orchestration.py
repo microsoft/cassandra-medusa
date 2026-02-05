@@ -15,7 +15,8 @@
 
 import logging
 
-from pssh.clients.ssh import ParallelSSHClient
+from pssh.clients.native.parallel import ParallelSSHClient as PsshNativeClient
+from pssh.clients.ssh.parallel import ParallelSSHClient as PsshSSHClient
 
 import medusa.utils
 from medusa.storage import divide_chunks
@@ -29,6 +30,11 @@ def display_output(host_outputs):
             logging.info("{}-stderr: {}".format(host_out.host, line))
 
 
+class OrchestrationError(RuntimeError):
+    """Raised when an unexpected error occurs during orchestration of commands across nodes."""
+    pass
+
+
 class Orchestration(object):
     def __init__(self, config, pool_size=10):
         self.pool_size = pool_size
@@ -39,33 +45,37 @@ class Orchestration(object):
         Runs a command on hosts list using pssh under the hood
         Return: True (success) or False (error)
         """
+        username = self.config.ssh.username if self.config.ssh.username != '' else None
+        port = int(self.config.ssh.port)
+        pkey = self.config.ssh.key_file if self.config.ssh.key_file != '' else None
+        cert_file = self.config.ssh.cert_file if self.config.ssh.cert_file != '' else None
+        keepalive_seconds = int(self.config.ssh.keepalive_seconds)
+        use_pty = medusa.utils.evaluate_boolean(self.config.ssh.use_pty)
+        use_login_shell = medusa.utils.evaluate_boolean(self.config.ssh.login_shell)
+
         if ssh_client is None:
-            ssh_client = ParallelSSHClient
+            if cert_file is None:
+                ssh_client = PsshNativeClient
+            else:
+                ssh_client = PsshSSHClient
         pssh_run_success = False
         success = []
         error = []
         i = 1
 
-        username = self.config.ssh.username if self.config.ssh.username != '' else None
-        port = int(self.config.ssh.port)
-        pkey = self.config.ssh.key_file if self.config.ssh.key_file != '' else None
-        cert_file = self.config.ssh.cert_file if self.config.ssh.cert_file != '' else None
-
         logging.info('Executing "{command}" on following nodes {hosts} with a parallelism/pool size of {pool_size}'
                      .format(command=command, hosts=hosts, pool_size=self.pool_size))
 
         for parallel_hosts in divide_chunks(hosts, self.pool_size):
+            client = self._init_ssh_client(parallel_hosts, ssh_client, cert_file, username, port, pkey,
+                                           keepalive_seconds)
 
-            client = ssh_client(parallel_hosts,
-                                forward_ssh_agent=True,
-                                pool_size=len(parallel_hosts),
-                                user=username,
-                                port=port,
-                                pkey=pkey,
-                                cert_file=cert_file)
-            logging.debug('Batch #{i}: Running "{command}" on nodes {hosts} parallelism of {pool_size}'
-                          .format(i=i, command=command, hosts=parallel_hosts, pool_size=len(parallel_hosts)))
-            output = client.run_command(command, host_args=hosts_variables,
+            logging.debug(f'Batch #{i}: Running "{command}" nodes={parallel_hosts} parallelism={len(parallel_hosts)} '
+                          f'login_shell={use_login_shell}')
+
+            shell = '$SHELL -cl' if use_login_shell else None
+
+            output = client.run_command(command, host_args=hosts_variables, use_pty=use_pty, shell=shell,
                                         sudo=medusa.utils.evaluate_boolean(self.config.cassandra.use_sudo))
             client.join(output)
 
@@ -79,11 +89,31 @@ class Orchestration(object):
             pssh_run_success = True
         elif len(error) > 0:
             logging.error('Job executing "{}" ran and finished with errors on following nodes: {}'
-                          .format(command, sorted(set(map(lambda host_output: host_output.host, error)))))
+                          .format(command, sorted({host_output.host for host_output in error})))
             display_output(error)
         else:
             err_msg = 'Something unexpected happened while running pssh command'
             logging.error(err_msg)
-            raise Exception(err_msg)
+            raise OrchestrationError(err_msg)
 
         return pssh_run_success
+
+    def _init_ssh_client(self, parallel_hosts, ssh_client, cert_file, username, port, pkey, keepalive_seconds):
+        if cert_file is None:
+            return ssh_client(parallel_hosts,
+                              forward_ssh_agent=True,
+                              pool_size=len(parallel_hosts),
+                              user=username,
+                              port=port,
+                              pkey=pkey,
+                              keepalive_seconds=keepalive_seconds)
+        else:
+            logging.debug('The ssh parameter "cert_file" is defined. Due to limitations in parallel-ssh '
+                          '"keep_alive" will be ignored and no ServerAlive messages will be generated')
+            return ssh_client(parallel_hosts,
+                              forward_ssh_agent=True,
+                              pool_size=len(parallel_hosts),
+                              user=username,
+                              port=port,
+                              pkey=pkey,
+                              cert_file=cert_file)
