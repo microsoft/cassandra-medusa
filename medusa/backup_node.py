@@ -205,7 +205,7 @@ def start_backup(storage, node_backup, cassandra, differential_mode, stagger_tim
 
 # Wait 2^i * 10 seconds between each retry, up to 2 minutes between attempts, which is right after the
 # attempt on which it waited for 60 seconds
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+@retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
 def get_schema_and_tokenmap(cassandra, config):
     schema, tokenmap = "", {}
 
