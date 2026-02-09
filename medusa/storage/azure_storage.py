@@ -44,24 +44,23 @@ class AzureStorage(AbstractStorage):
 
     def __init__(self, config):
 
-        if config.key_file is not None:
-            credentials_file = Path(config.key_file).expanduser()
-            logging.debug(f"Loading identity from credentials file: {credentials_file.absolute()}")
-            with open(credentials_file, "r") as f:
-                credentials_dict = json.loads(f.read())
-                self.credentials = AzureNamedKeyCredential(
-                    name=credentials_dict["storage_account"],
-                    key=credentials_dict["key"]
-                )
-                self.account_name = self.credentials.named_key.name
+        credentials_file = Path(config.key_file).expanduser()
+        with open(credentials_file, "r") as f:
+            credentials_dict = json.loads(f.read())
+
+        if "identity_config" in credentials_dict:
+            self.credentials = ManagedIdentityCredential(
+                identity_config=credentials_dict["identity_config"]
+            )
         else:
-            logging.debug("No credentials file specified, using DefaultAzureCredential")
-            self.credentials = DefaultAzureCredential()
-            self.account_name = os.environ.get('AZURE_STORAGE_ACCOUNT', None)
-            if self.account_name is None:
-                raise ValueError("No Azure storage account name specified in AZURE_STORAGE_ACCOUNT env variable")
+            self.credentials = AzureNamedKeyCredential(
+                name=credentials_dict["storage_account"],
+                key=credentials_dict["key"]
+            )
 
         self.bucket_name = config.bucket_name
+        self.read_timeout = int(config.read_timeout) if 'read_timeout' in dir(config) and config.read_timeout else None
+
 
         if "blob_url" in credentials_dict:
             self.azure_blob_service_url = credentials_dict["blob_url"]
