@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Check linked issues
     steps:
-      - uses: nearform/github-action-check-linked-issues@v1
+      - uses: nearform/github-action-check-linked-issues@7140e2e01aa0c18b8ac61bddf5e89abde1ca760e # v1.8.3
         continue-on-error: true
         id: check-linked-issues
         with:
