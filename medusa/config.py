@@ -28,10 +28,12 @@ from medusa.network.hostname_resolver import HostnameResolver
 
 StorageConfig = collections.namedtuple(
     'StorageConfig',
-    ['bucket_name', 'key_file', 'prefix', 'fqdn', 'host_file_separator', 'storage_provider',
+    ['bucket_name', 'key_file', 'prefix', 'fqdn', 'host_file_separator', 'storage_provider', 'storage_class',
      'base_path', 'max_backup_age', 'max_backup_count', 'api_profile', 'transfer_max_bandwidth',
-     'concurrent_transfers', 'multi_part_upload_threshold', 'host', 'region', 'port', 'secure', 'ssl_verify',
-     'aws_cli_path', 'kms_id', 'backup_grace_period_in_days', 'use_sudo_for_restore', 'k8s_mode']
+     'concurrent_transfers', 'multi_part_upload_threshold', 'multipart_chunksize', 'multipart_max_concurrency',
+     'host', 'region', 'port', 'secure',
+     'ssl_verify', 'aws_cli_path', 'kms_id', 'sse_c_key', 'backup_grace_period_in_days', 'use_sudo_for_restore',
+     'k8s_mode', 'read_timeout', 's3_addressing_style']
 )
 
 CassandraConfig = collections.namedtuple(
@@ -45,12 +47,12 @@ CassandraConfig = collections.namedtuple(
 
 SSHConfig = collections.namedtuple(
     'SSHConfig',
-    ['username', 'key_file', 'port', 'cert_file']
+    ['username', 'key_file', 'port', 'cert_file', 'use_pty', 'keepalive_seconds', 'login_shell']
 )
 
 ChecksConfig = collections.namedtuple(
     'ChecksConfig',
-    ['health_check', 'query', 'expected_rows', 'expected_result', 'enable_md5_checks']
+    ['health_check', 'query', 'expected_rows', 'expected_result', 'enable_md5_checks', 'md5_check_concurrency']
 )
 
 MonitoringConfig = collections.namedtuple(
@@ -62,8 +64,9 @@ MedusaConfig = collections.namedtuple(
     'MedusaConfig',
     [
         'file_path',  # Store a specific config file path, None for default file
-        'storage', 'cassandra', 'ssh', 'checks', 'monitoring', 'logging', 'grpc', 'kubernetes'
-    ]
+        'storage', 'cassandra', 'ssh', 'checks', 'monitoring', 'logging', 'grpc', 'kubernetes', 'pitr'
+    ],
+    defaults=[None]
 )
 
 LoggingConfig = collections.namedtuple(
@@ -73,12 +76,18 @@ LoggingConfig = collections.namedtuple(
 
 GrpcConfig = collections.namedtuple(
     'GrpcConfig',
-    ['enabled', 'max_send_message_length', 'max_receive_message_length']
+    ['enabled', 'max_send_message_length', 'max_receive_message_length', 'port', 'ca_cert', 'tls_cert', 'tls_key']
 )
 
 KubernetesConfig = collections.namedtuple(
     'KubernetesConfig',
     ['enabled', 'cassandra_url', 'use_mgmt_api', 'ca_cert', 'tls_cert', 'tls_key']
+)
+
+PitrConfig = collections.namedtuple(
+    'PitrConfig',
+    ['enabled', 'commitlog_archive_interval_seconds', 'commitlog_spool_dir', 'commitlog_staging_dir',
+     'commitlog_restore_grace_period_seconds']
 )
 
 CONFIG_SECTIONS = {
@@ -89,10 +98,12 @@ CONFIG_SECTIONS = {
     'monitoring': MonitoringConfig,
     'logging': LoggingConfig,
     'grpc': GrpcConfig,
-    'kubernetes': KubernetesConfig
+    'kubernetes': KubernetesConfig,
+    'pitr': PitrConfig
 }
 
 DEFAULT_CONFIGURATION_PATH = pathlib.Path('/etc/medusa/medusa.ini')
+DEFAULT_GRPC_PORT = 50051
 
 
 def _build_default_config():
@@ -109,14 +120,17 @@ def _build_default_config():
         'api_profile': '',
         'transfer_max_bandwidth': '50MB/s',
         'concurrent_transfers': '1',
-        'multi_part_upload_threshold': str(20 * 1024 * 1024),
+        'multi_part_upload_threshold': '20MB',
         'secure': 'True',
         'ssl_verify': 'False',      # False until we work out how to specify custom certs
         'aws_cli_path': 'aws',
         'fqdn': socket.getfqdn(),
         'region': 'default',
         'backup_grace_period_in_days': 10,
-        'use_sudo_for_restore': 'True'
+        'use_sudo_for_restore': 'True',
+        'multipart_chunksize': '50MB',
+        'multipart_max_concurrency': '4',
+        's3_addressing_style': 'auto',
     }
 
     config['logging'] = {
@@ -145,7 +159,10 @@ def _build_default_config():
         'username': os.environ.get('USER') or '',
         'key_file': '',
         'port': '22',
-        'cert_file': ''
+        'cert_file': '',
+        'use_pty': 'False',
+        'keepalive_seconds': '60',
+        'login_shell': 'False'
     }
 
     config['checks'] = {
@@ -153,7 +170,8 @@ def _build_default_config():
         'query': '',
         'expected_rows': '0',
         'expected_result': '',
-        'enable_md5_checks': 'false'
+        'enable_md5_checks': 'false',
+        'md5_check_concurrency': '1'
     }
 
     config['monitoring'] = {
@@ -165,6 +183,7 @@ def _build_default_config():
         'enabled': 'False',
         'max_send_message_length': '536870912',
         'max_receive_message_length': '134217728',
+        'port': f'{DEFAULT_GRPC_PORT}'
     }
 
     config['kubernetes'] = {
@@ -174,6 +193,14 @@ def _build_default_config():
         'ca_cert': '',
         'tls_cert': '',
         'tls_key': ''
+    }
+
+    config['pitr'] = {
+        'enabled': 'false',
+        'commitlog_archive_interval_seconds': '60',
+        'commitlog_spool_dir': '/var/lib/cassandra/commitlog_spool_dir',
+        'commitlog_staging_dir': '/var/lib/cassandra/medusa_commitlog_staging',
+        'commitlog_restore_grace_period_seconds': '3600'
     }
     return config
 
@@ -187,6 +214,18 @@ def parse_config(args, config_file):
     """
     config = _build_default_config()
 
+    _load_config_file(config, config_file)
+    _override_config_with_args(config, args)
+    _handle_k8s_and_grpc_settings(config, args)
+    _handle_env_vars(config)
+    _handle_k8s_secrets(config)
+    _handle_hostname_resolution(config)
+
+    return config
+
+
+def _load_config_file(config, config_file):
+    """Load configuration from file, handling default path if needed."""
     if config_file is None and not DEFAULT_CONFIGURATION_PATH.exists():
         logging.error(
             'No configuration file provided via CLI, nor no default file found in {}'.format(DEFAULT_CONFIGURATION_PATH)
@@ -198,20 +237,24 @@ def parse_config(args, config_file):
     with actual_config_file.open() as f:
         config.read_file(f)
 
-    # Override config file settings with command line options
+
+def _override_config_with_args(config, args):
+    """Override config with command line arguments."""
     for config_section in config.keys():
-        # Default section is not used in medusa.ini
         if config_section == 'DEFAULT':
             continue
         settings = CONFIG_SECTIONS[config_section]._fields
+        if config_section == 'pitr':
+            settings = [field for field in settings if field != 'enabled']
         config.read_dict({config_section: {
             key: value
             for key, value in _zip_fields_with_arg_values(settings, args)
             if value is not None
         }})
 
-    # the k8s mode and grpc server overlap in a keyword 'enabled'
-    # so we need to reconcile them explicitly
+
+def _handle_k8s_and_grpc_settings(config, args):
+    """Handle Kubernetes and gRPC specific settings."""
     k8s_enabled = evaluate_boolean(config['kubernetes']['enabled'])
     if args.get('k8s_enabled', 'False') == 'True' or k8s_enabled:
         config.set('kubernetes', 'enabled', 'True')
@@ -227,10 +270,9 @@ def parse_config(args, config_file):
         if "POD_IP" in os.environ:
             config['storage']['fqdn'] = os.environ["POD_IP"]
 
-    config.set('cassandra', 'resolve_ip_addresses', 'True'
-               if evaluate_boolean(config['cassandra']['resolve_ip_addresses']) else 'False')
-    kubernetes_enabled = evaluate_boolean(config['kubernetes']['enabled'])
 
+def _handle_env_vars(config):
+    """Handle environment variable overrides."""
     for config_property in ['cql_username', 'cql_password']:
         config_property_upper_old = config_property.upper()
         config_property_upper_new = "MEDUSA_{}".format(config_property.upper())
@@ -254,6 +296,9 @@ def parse_config(args, config_file):
         if config_property_upper in os.environ:
             config.set('cassandra', config_property, os.environ[config_property_upper])
 
+
+def _handle_k8s_secrets(config):
+    """Handle Kubernetes secrets configuration."""
     if config.has_option('cassandra', 'cql_k8s_secrets_path'):
         cql_k8s_secrets_path = config.get('cassandra', 'cql_k8s_secrets_path')
         if cql_k8s_secrets_path:
@@ -270,18 +315,21 @@ def parse_config(args, config_file):
             config.set('cassandra', 'nodetool_username', nodetool_k8s_username)
             config.set('cassandra', 'nodetool_password', nodetool_k8s_password)
 
+
+def _handle_hostname_resolution(config):
+    """Handle hostname resolution settings."""
     resolve_ip_addresses = config['cassandra']['resolve_ip_addresses']
+    kubernetes_enabled = evaluate_boolean(config['kubernetes']['enabled'])
     hostname_resolver = HostnameResolver(resolve_ip_addresses, kubernetes_enabled)
+
     if config['storage']['fqdn'] == socket.getfqdn() and not resolve_ip_addresses:
-        # Use the ip address instead of the fqdn when DNS resolving is turned off
         config['storage']['fqdn'] = socket.gethostbyname(socket.getfqdn())
     elif config['storage']['fqdn'] == socket.getfqdn():
-        # The FQDN for the local node should comply with the hostname resolving rules.
         config.set('storage', 'fqdn', hostname_resolver.resolve_fqdn())
 
     config.set('storage', 'k8s_mode', str(kubernetes_enabled))
-
-    return config
+    config.set('cassandra', 'resolve_ip_addresses', 'True'
+               if evaluate_boolean(config['cassandra']['resolve_ip_addresses']) else 'False')
 
 
 def _load_k8s_secrets(k8s_secrets_path):
@@ -323,7 +371,8 @@ def load_config(args, config_file):
         monitoring=_namedtuple_from_dict(MonitoringConfig, config['monitoring']),
         logging=_namedtuple_from_dict(LoggingConfig, config['logging']),
         grpc=_namedtuple_from_dict(GrpcConfig, config['grpc']),
-        kubernetes=_namedtuple_from_dict(KubernetesConfig, config['kubernetes'])
+        kubernetes=_namedtuple_from_dict(KubernetesConfig, config['kubernetes']),
+        pitr=_namedtuple_from_dict(PitrConfig, config['pitr'])
     )
 
     for field in ['bucket_name', 'storage_provider']:

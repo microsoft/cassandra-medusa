@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
 import datetime
 import json
 import logging
@@ -23,12 +24,17 @@ import traceback
 import typing as t
 import psutil
 
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 import medusa.utils
 from medusa.backup_manager import BackupMan
 from medusa.cassandra_utils import Cassandra
-from medusa.index import add_backup_start_to_index, add_backup_finish_to_index, set_latest_backup_in_index
+from medusa.index import (
+    add_backup_start_to_index,
+    add_backup_finish_to_index,
+    add_snapshot_time_to_index,
+    set_latest_backup_in_index
+)
 from medusa.monitoring import Monitoring
 from medusa.storage import Storage, format_bytes_str, NodeBackup
 from medusa.storage.abstract_storage import ManifestObject
@@ -75,7 +81,8 @@ def stagger(fqdn, storage, tokenmap):
 # Called by async thread for backup, called in main thread as synchronous backup.
 # Kicks off the node backup unit of work and registers for backup queries.
 # No return value for async mode, throws back exception for failed kickoff.
-def handle_backup(config, backup_name_arg, stagger_time, enable_md5_checks_flag, mode):
+def handle_backup(config, backup_name_arg, stagger_time, enable_md5_checks_flag, mode, keep_snapshot=False,
+                  use_existing_snapshot=False):
     start = datetime.datetime.now()
     backup_name = backup_name_arg or start.strftime('%Y%m%d%H%M')
     monitoring = Monitoring(config=config.monitoring)
@@ -105,14 +112,15 @@ def handle_backup(config, backup_name_arg, stagger_time, enable_md5_checks_flag,
                 name=backup_name,
                 differential_mode=differential_mode
             )
-            if node_backup.exists():
+            if node_backup.exists() and not use_existing_snapshot:
                 raise IOError('Error: Backup {} already exists'.format(backup_name))
 
             # Starting the backup
             logging.info("Starting backup using Stagger: {} Mode: {} Name: {}".format(stagger_time, mode, backup_name))
             BackupMan.update_backup_status(backup_name, BackupMan.STATUS_IN_PROGRESS)
             info = start_backup(storage, node_backup, cassandra, differential_mode, stagger_time, start, mode,
-                                enable_md5_checks_flag, backup_name, config, monitoring)
+                                enable_md5_checks_flag, backup_name, config, monitoring, keep_snapshot,
+                                use_existing_snapshot)
             BackupMan.update_backup_status(backup_name, BackupMan.STATUS_SUCCESS)
 
             logging.debug("Done with backup, returning backup result information")
@@ -136,7 +144,14 @@ def handle_backup(config, backup_name_arg, stagger_time, enable_md5_checks_flag,
 
 
 def start_backup(storage, node_backup, cassandra, differential_mode, stagger_time, start, mode,
-                 enable_md5_checks_flag, backup_name, config, monitoring):
+                 enable_md5_checks_flag, backup_name, config, monitoring, keep_snapshot=False,
+                 use_existing_snapshot=False):
+
+    if use_existing_snapshot and not cassandra.snapshot_exists(backup_name):
+        raise IOError(
+            "Error: Snapshot {} does not exist and use_existing_snapshot is True. Please create the snapshot first."
+            .format(backup_name)
+        )
     try:
         # Make sure that priority remains to Cassandra/limiting backups resource usage
         throttle_backup()
@@ -171,8 +186,12 @@ def start_backup(storage, node_backup, cassandra, differential_mode, stagger_tim
     # Perform the actual backup
     actual_start = datetime.datetime.now()
     enable_md5 = enable_md5_checks_flag or medusa.utils.evaluate_boolean(config.checks.enable_md5_checks)
+    configured_md5_check_concurrency = int(config.checks.md5_check_concurrency or 0)
+    md5_check_concurrency = max(configured_md5_check_concurrency, 1)
+    pitr_enabled = is_pitr_enabled(config)
     num_files, num_replaced, num_kept = do_backup(
-        cassandra, node_backup, storage, enable_md5, backup_name
+        cassandra, node_backup, storage, enable_md5, md5_check_concurrency, backup_name, keep_snapshot,
+        use_existing_snapshot, pitr_enabled
     )
     end = datetime.datetime.now()
     actual_backup_duration = end - actual_start
@@ -194,7 +213,7 @@ def start_backup(storage, node_backup, cassandra, differential_mode, stagger_tim
 
 # Wait 2^i * 10 seconds between each retry, up to 2 minutes between attempts, which is right after the
 # attempt on which it waited for 60 seconds
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+@retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
 def get_schema_and_tokenmap(cassandra):
     with cassandra.new_session() as cql_session:
         schema = cql_session.dump_schema()
@@ -202,30 +221,49 @@ def get_schema_and_tokenmap(cassandra):
     return schema, tokenmap
 
 
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+@retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
 def get_server_type_and_version(cassandra):
     with cassandra.new_session() as cql_session:
         server_type, release_version = cql_session.get_server_type_and_release_version()
     return server_type, release_version
 
 
-def do_backup(cassandra, node_backup, storage, enable_md5_checks, backup_name):
+def is_pitr_enabled(config):
+    """
+    PITR is off unless [pitr] enabled = true. A config without a [pitr] section/field counts as off.
+    """
+    pitr_config = getattr(config, 'pitr', None)
+    if pitr_config is None:
+        return False
+    return medusa.utils.evaluate_boolean(getattr(pitr_config, 'enabled', False))
+
+
+def do_backup(cassandra, node_backup, storage, enable_md5_checks, md5_check_concurrency, backup_name,
+              keep_snapshot=False, use_existing_snapshot=False, pitr_enabled=False):
+
+    if use_existing_snapshot:
+        logging.debug('Skipping snapshot creation')
+        logging.debug("Getting snapshot")
+        snapshot = cassandra.get_snapshot(backup_name, keep_snapshot)
+    else:
+        logging.debug("Creating snapshot")
+        snapshot = cassandra.create_snapshot(backup_name, keep_snapshot)
 
     # the cassandra snapshot we use defines __exit__ that cleans up the snapshot
     # so even if exception is thrown, a new snapshot will be created on the next run
     # this is not too good and we will use just one snapshot in the future
-    logging.info('Creating snapshot')
-    with cassandra.create_snapshot(backup_name) as snapshot:
+    with snapshot:
+        snapshot_time = snapshot.get_snapshot_time() if pitr_enabled else None
         manifest = []
         num_files, num_replaced, num_kept = backup_snapshots(
-            storage, manifest, node_backup, snapshot, enable_md5_checks
+            storage, manifest, node_backup, snapshot, enable_md5_checks, md5_check_concurrency
         )
 
-    if node_backup.is_dse:
+    if node_backup.is_dse_6:
         logging.info('Creating DSE snapshot')
         with cassandra.create_dse_snapshot(backup_name) as snapshot:
             dse_num_files, dse_replaced, dse_kept = backup_snapshots(
-                storage, manifest, node_backup, snapshot, enable_md5_checks
+                storage, manifest, node_backup, snapshot, enable_md5_checks, md5_check_concurrency
             )
             num_files += dse_num_files
             num_replaced += dse_replaced
@@ -233,7 +271,10 @@ def do_backup(cassandra, node_backup, storage, enable_md5_checks, backup_name):
 
     logging.info('Updating backup index')
     node_backup.manifest = json.dumps(manifest)
+    if snapshot_time is not None:
+        node_backup.snapshot_time = snapshot_time
     add_backup_finish_to_index(storage, node_backup)
+    add_snapshot_time_to_index(storage, node_backup)
     set_latest_backup_in_index(storage, node_backup)
     return num_files, num_replaced, num_kept
 
@@ -241,7 +282,8 @@ def do_backup(cassandra, node_backup, storage, enable_md5_checks, backup_name):
 def print_backup_stats(
         actual_backup_duration, actual_start, end, node_backup, num_files, num_replaced, num_kept, start
 ):
-    logging.info('Backup done')
+    logging.info('Backup done: {} ({})'.format(
+        node_backup.name, 'differential' if node_backup.is_differential else 'full'))
 
     logging.info("""- Started: {:%Y-%m-%d %H:%M:%S}
                         - Started extracting data: {:%Y-%m-%d %H:%M:%S}
@@ -281,18 +323,19 @@ def update_monitoring(actual_backup_duration, backup_name, monitoring, node_back
     logging.debug('Done emitting metrics')
 
 
-def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks):
+def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks, md5_check_concurrency):
     try:
         num_files = 0
         replaced = 0
         kept = 0
         multipart_threshold = storage.config.multi_part_upload_threshold
+        multipart_chunksize = storage.config.multipart_chunksize
 
         if node_backup.is_differential:
             logging.info(f'Listing already backed up files for node {node_backup.fqdn}')
             files_in_storage = storage.list_files_per_table()
         else:
-            files_in_storage = dict()
+            files_in_storage = {}
 
         for snapshot_path in snapshot.find_dirs():
             fqtn = f"{snapshot_path.keyspace}.{snapshot_path.columnfamily}"
@@ -303,9 +346,12 @@ def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks
                 node_backup=node_backup,
                 files_in_storage=files_in_storage,
                 multipart_threshold=multipart_threshold,
+                multipart_chunksize=multipart_chunksize,
                 enable_md5_checks=enable_md5_checks,
+                md5_check_concurrency=md5_check_concurrency,
                 keyspace=snapshot_path.keyspace,
-                srcs=list(snapshot_path.list_files()))
+                srcs=list(snapshot_path.list_files()),
+                fqtn=fqtn)
 
             replaced += len(needs_reupload)
             kept += len(already_backed_up)
@@ -317,7 +363,7 @@ def backup_snapshots(storage, manifest, node_backup, snapshot, enable_md5_checks
             )
             logging.debug("Snapshot destination path: {}".format(dst_path))
 
-            manifest_objects = list()
+            manifest_objects = []
             needs_upload = needs_backup + needs_reupload
             if len(needs_upload) > 0:
                 manifest_objects += storage.storage_driver.upload_blobs(needs_upload, dst_path)
@@ -349,41 +395,75 @@ def check_already_uploaded(
         storage: Storage,
         node_backup: NodeBackup,
         multipart_threshold: int,
+        multipart_chunksize: t.Optional[str],
         enable_md5_checks: bool,
+        md5_check_concurrency: int,
         files_in_storage: t.Dict[str, t.Dict[str, t.Dict[str, ManifestObject]]],
         keyspace: str,
-        srcs: t.List[pathlib.Path]
-) -> (t.List[pathlib.Path], t.List[ManifestObject]):
+        srcs: t.List[pathlib.Path],
+        fqtn: str
+) -> tuple[t.List[pathlib.Path], t.List[pathlib.Path], t.List[ManifestObject]]:
 
     NEVER_BACKED_UP = ['manifest.json', 'schema.cql']
-    needs_backup = list()
-    needs_reupload = list()
-    already_backed_up = list()
+    needs_backup = []
+    needs_reupload = []
+    already_backed_up = []
 
     # in full mode we upload always everything
     if node_backup.is_differential is False:
         return [src for src in srcs if src.name not in NEVER_BACKED_UP], needs_reupload, already_backed_up
 
     keyspace_files_in_storage = files_in_storage.get(keyspace, {})
+    storage_driver = storage.storage_driver
 
+    # Files already present in storage need their local copy compared (size, or size+md5 when
+    # enable_md5_checks is on) against the manifest. That's local disk/CPU work with no network
+    # involved, so it's fanned out across threads rather than done one file at a time - with
+    # differential backups that serial loop was a barrier blocking every upload for the table.
+    to_compare = []
     for src in srcs:
         if src.name in NEVER_BACKED_UP:
             continue
+        # safe_table_name is either a table, or a "table.2i_name"
+        _, safe_table_name = Storage.sanitize_keyspace_and_table_name(src)
+        item_in_storage = keyspace_files_in_storage.get(safe_table_name, {}).get(src.name, None)
+        # object is not in storage
+        if item_in_storage is None:
+            needs_backup.append(src)
         else:
-            # safe_table_name is either a table, or a "table.2i_name"
-            _, safe_table_name = Storage.sanitize_keyspace_and_table_name(src)
-            item_in_storage = keyspace_files_in_storage.get(safe_table_name, {}).get(src.name, None)
-            # object is not in storage
-            if item_in_storage is None:
-                needs_backup.append(src)
-                continue
-            # object is in storage but with different size or digest
-            storage_driver = storage.storage_driver
-            if not storage_driver.file_matches_storage(src, item_in_storage, multipart_threshold, enable_md5_checks):
-                needs_reupload.append(src)
-                continue
-            # object is in storage with correct size and digest
-            already_backed_up.append(item_in_storage)
+            to_compare.append((src, item_in_storage))
+
+    if to_compare:
+        total = len(to_compare)
+        logging.debug(
+            f"Comparing {total} files against the manifest for {fqtn} "
+            f"(md5_checks={enable_md5_checks}, workers={md5_check_concurrency})"
+        )
+        start = time.monotonic()
+        completed = 0
+        progress_step = max(1, total // 20)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=md5_check_concurrency) as executor:
+            futures = {
+                executor.submit(
+                    storage_driver.file_matches_storage,
+                    src, item_in_storage, multipart_threshold, enable_md5_checks, multipart_chunksize
+                ): (src, item_in_storage)
+                for src, item_in_storage in to_compare
+            }
+            for future in concurrent.futures.as_completed(futures):
+                src, item_in_storage = futures[future]
+                if future.result():
+                    # object is in storage with correct size and digest
+                    already_backed_up.append(item_in_storage)
+                else:
+                    # object is in storage but with different size or digest
+                    needs_reupload.append(src)
+                completed += 1
+                if completed % progress_step == 0 or completed == total:
+                    logging.debug(
+                        f"Compared {completed}/{total} files for {fqtn} "
+                        f"({time.monotonic() - start:.1f}s elapsed)"
+                    )
 
     return needs_backup, needs_reupload, already_backed_up
 

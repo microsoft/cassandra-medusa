@@ -17,6 +17,7 @@
 
 
 import fileinput
+import functools
 import itertools
 import logging
 import os
@@ -34,7 +35,7 @@ from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import Cluster, ExecutionProfile
 from cassandra.policies import WhiteListRoundRobinPolicy
 from cassandra.util import Version
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from medusa.host_man import HostMan
 from medusa.network.hostname_resolver import HostnameResolver
@@ -266,6 +267,13 @@ class CassandraConfigReader(object):
         return pathlib.Path(saved_caches_directory)
 
     @property
+    def dse_metadata_directory(self):
+        # DSE adds this key to cassandra.yaml itself (not dse.yaml). Older DSE versions (eg 5.1, #826)
+        # don't have it at all, so callers must fall back to a guessed location when this is None.
+        metadata_directory = self._config.get('metadata_directory')
+        return pathlib.Path(metadata_directory) if metadata_directory else None
+
+    @property
     def listen_address(self):
         if 'listen_address' in self._config and self._config['listen_address']:
             return self._config['listen_address']
@@ -332,7 +340,7 @@ class CassandraConfigReader(object):
 
     @property
     def seeds(self):
-        seeds = list()
+        seeds = []
         if 'seed_provider' in self._config and self._config['seed_provider'] and \
                 self._config['seed_provider'][0]['class_name'].endswith('SimpleSeedProvider'):
             return self._config.get('seed_provider')[0]['parameters'][0]['seeds'].replace(' ', '').split(',')
@@ -355,8 +363,15 @@ class Cassandra(object):
         config_reader = CassandraConfigReader(cassandra_config.config_file, release_version)
         self._cassandra_config_file = cassandra_config.config_file
         self._root = config_reader.root
-        self._dse_root = self._root.parent
-        self._dse_metadata_folder = 'metadata'
+        dse_metadata_directory = config_reader.dse_metadata_directory
+        if dse_metadata_directory is not None:
+            self._dse_root = dse_metadata_directory.parent
+            self._dse_metadata_folder = dse_metadata_directory.name
+        else:
+            # metadata_directory isn't set in cassandra.yaml (older DSE, eg 5.1, #826) - guess its
+            # location next to the data directory, which holds for the common/default DSE layout.
+            self._dse_root = self._root.parent
+            self._dse_metadata_folder = 'metadata'
         self._commitlog_path = config_reader.commitlog_directory
         self._saved_caches_path = config_reader.saved_caches_directory
         self._hostname = contact_point if contact_point is not None else config_reader.listen_address
@@ -438,11 +453,17 @@ class Cassandra(object):
                 session.execute(f"REBUILD SEARCH INDEX ON {fqtn}")
 
     @staticmethod
-    def _ignore_snapshots(folder, contents):
+    def _ignore_snapshots(metadata_folder, folder, contents):
         ignored = set()
-        if folder.endswith('metadata/snapshots'):
+        if folder.endswith(f'{metadata_folder}/snapshots'):
             logging.info(f'Ignoring {contents} in folder {folder}')
             for c in contents:
+                ignored.add(c)
+        # check for ephemeral files, such as transaction locks
+        # they are identified by containing a dot (eg metadata/nodes/local.txn)
+        for c in contents:
+            if '.txn' in c or '.old' in c:
+                logging.info(f'Ignoring {c} in folder {folder}')
                 ignored.add(c)
         return ignored
 
@@ -457,9 +478,14 @@ class Cassandra(object):
 
         tag = "{}{}".format(self.SNAPSHOT_PREFIX, backup_name)
         if not self.dse_snapshot_exists(tag):
-            src_path = self._dse_root / self._dse_metadata_folder
-            dst_path = self._dse_root / self._dse_metadata_folder / 'snapshots' / tag
-            shutil.copytree(src_path, dst_path, ignore=Cassandra._ignore_snapshots)
+            src_path = self.dse_metadata_path
+            if src_path.is_dir():
+                dst_path = src_path / 'snapshots' / tag
+                ignore = functools.partial(Cassandra._ignore_snapshots, self._dse_metadata_folder)
+                shutil.copytree(src_path, dst_path, ignore=ignore)
+            else:
+                # Not every DSE node has a metadata folder - warn instead of failing the backup.
+                logging.warning(f'No DSE metadata folder found at {src_path}, nothing to snapshot')
 
         return Cassandra.DseSnapshot(self, tag)
 
@@ -487,22 +513,27 @@ class Cassandra(object):
         def delete(self):
             dse_folder = self._parent._dse_metadata_folder
             dse_folder_path = self._parent._dse_root / dse_folder / 'snapshots' / self._tag
-            shutil.rmtree(dse_folder_path)
+            if dse_folder_path.is_dir():
+                shutil.rmtree(dse_folder_path)
 
         def __repr__(self):
             return '{}<{}>'.format(self.__class__.__qualname__, self._tag)
 
     class Snapshot(object):
-        def __init__(self, parent, tag):
+        def __init__(self, parent, tag, keep_snapshot=False):
             self._parent = parent
             self._tag = tag
+            self._keep_snapshot = keep_snapshot
 
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            logging.debug('Cleaning up Cassandra snapshot')
-            self.delete()
+            if not self._keep_snapshot:
+                logging.debug('Cleaning up Cassandra snapshot')
+                self.delete()
+            else:
+                logging.debug('Keeping snapshot {}'.format(self._tag))
 
         @property
         def cassandra(self):
@@ -529,18 +560,33 @@ class Cassandra(object):
                     not in CqlSession.EXCLUDED_KEYSPACES)
             ]
 
+        def get_snapshot_time(self):
+            """
+            Returns the time (integer epoch seconds) at which this snapshot was frozen on the node,
+            or None if it cannot be determined (no snapshot dirs, or the mtime could not be read).
+
+            Rule: use the LATEST mtime of all snapshot dirs, so that the snapshotted SSTables hold
+            no data written after the returned value.
+            """
+            try:
+                mtimes = [snapshot_path.path.stat().st_mtime for snapshot_path in self.find_dirs()]
+            except OSError as e:
+                logging.warning('Could not read the snapshot time of snapshot {}: {}'.format(self._tag, e))
+                return None
+            return int(max(mtimes)) if mtimes else None
+
         def delete(self):
             self._parent.delete_snapshot(self._tag)
 
         def __repr__(self):
             return '{}<{}>'.format(self.__class__.__qualname__, self._tag)
 
-    def create_snapshot(self, backup_name):
+    def create_snapshot(self, backup_name, keep_snapshot=False):
         tag = "{}{}".format(self.SNAPSHOT_PREFIX, backup_name)
         if not self.snapshot_exists(tag):
             self.snapshot_service.create_snapshot(tag=tag)
 
-        return Cassandra.Snapshot(self, tag)
+        return Cassandra.Snapshot(self, tag, keep_snapshot)
 
     def delete_snapshot(self, tag):
         if self.snapshot_exists(tag):
@@ -553,9 +599,9 @@ class Cassandra(object):
             if snapshot.is_dir()
         }
 
-    def get_snapshot(self, tag):
+    def get_snapshot(self, tag, keep_snapshot=False):
         if any(self.root.glob(self.SNAPSHOT_PATTERN.format(tag))):
-            return Cassandra.Snapshot(self, tag)
+            return Cassandra.Snapshot(self, tag, keep_snapshot)
 
         raise KeyError('Snapshot {} does not exist'.format(tag))
 
@@ -566,8 +612,8 @@ class Cassandra(object):
         return False
 
     def dse_snapshot_exists(self, tag):
-        # dse files live one directory up from the data folder
-        # the root field should point to the data directory as defined in the cassandra.yaml
+        # _dse_root is metadata_directory's parent (from cassandra.yaml) when set, otherwise a guess
+        # based on the data directory - see Cassandra.__init__.
         for snapshot in self._dse_root.glob(self.DSE_SNAPSHOT_PATTERN.format('*')):
             if snapshot.is_dir() and snapshot.name == tag:
                 return True
@@ -684,7 +730,7 @@ class Cassandra(object):
                 cassandra_yaml.write('\nauto_bootstrap: false')
 
 
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=5000, wait_exponential_max=120000)
+@retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=5, max=120))
 def wait_for_node_to_come_up(config, host):
     logging.info('Waiting for Cassandra to come up on {}'.format(host))
 
@@ -695,7 +741,7 @@ def wait_for_node_to_come_up(config, host):
         return True
 
 
-@retry(stop_max_attempt_number=7, wait_exponential_multiplier=5000, wait_exponential_max=120000)
+@retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=5, max=120))
 def wait_for_node_to_go_down(config, host):
     logging.info('Waiting for Cassandra to go down on {}'.format(host))
 
@@ -834,7 +880,7 @@ def is_open(host, port):
     return is_accessible
 
 
-@retry(stop_max_attempt_number=5, wait_exponential_multiplier=5000, wait_exponential_max=120000)
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=5, max=120))
 def is_cassandra_up(host, port):
     if is_open(host, port):
         return True

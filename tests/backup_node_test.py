@@ -12,8 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import datetime
 import os
 import pathlib
+import threading
+import time
 import unittest
 from concurrent.futures.thread import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
@@ -83,6 +86,94 @@ class BackupNodeTest(unittest.TestCase):
         assert result is not None
         assert result == {"foo": "bar"}
 
+    def test_print_backup_stats_logs_backup_name_and_mode(self):
+        for differential, mode in ((True, 'differential'), (False, 'full')):
+            node_backup = MagicMock()
+            node_backup.name = 'backup-name'
+            node_backup.is_differential = differential
+            node_backup.size.return_value = 0
+            with self.assertLogs(level='INFO') as logs:
+                now = datetime.datetime.now()
+                backup_node.print_backup_stats(now - now, now, now, node_backup, 0, 0, 0, now)
+            self.assertIn('INFO:root:Backup done: backup-name ({})'.format(mode), logs.output)
+
+    def _run_do_backup(self, pitr_enabled, snapshot_time=1500, **kwargs):
+        events = []
+        snapshot = MagicMock()
+        snapshot.__enter__.return_value = snapshot
+        snapshot.__exit__.side_effect = lambda *args: events.append('snapshot_deleted')
+        snapshot.get_snapshot_time.side_effect = lambda: events.append('snapshot_time_read') or snapshot_time
+        cassandra = MagicMock()
+        cassandra.create_snapshot.return_value = snapshot
+        cassandra.get_snapshot.return_value = snapshot
+        node_backup = MagicMock()
+        node_backup.is_dse_6 = False
+        node_backup.snapshot_time = None
+        storage = MagicMock()
+
+        with patch('medusa.backup_node.backup_snapshots', return_value=(1, 0, 0)), \
+                patch('medusa.backup_node.add_backup_finish_to_index'), \
+                patch('medusa.backup_node.set_latest_backup_in_index'), \
+                patch('medusa.backup_node.add_snapshot_time_to_index',
+                      side_effect=lambda *args: events.append('index_written')) as add_snapshot_time:
+            backup_node.do_backup(cassandra, node_backup, storage, False, 1, 'backup1',
+                                  pitr_enabled=pitr_enabled, **kwargs)
+        return events, add_snapshot_time, snapshot, storage, node_backup
+
+    def test_do_backup_reads_snapshot_time_before_snapshot_is_deleted(self):
+        events, add_snapshot_time, _, storage, node_backup = self._run_do_backup(pitr_enabled=True)
+
+        self.assertEqual(['snapshot_time_read', 'snapshot_deleted', 'index_written'], events)
+        self.assertEqual(1500, node_backup.snapshot_time)
+        add_snapshot_time.assert_called_once_with(storage, node_backup)
+
+    def test_do_backup_reads_snapshot_time_with_existing_snapshot(self):
+        events, add_snapshot_time, _, storage, node_backup = self._run_do_backup(
+            pitr_enabled=True, use_existing_snapshot=True)
+
+        self.assertEqual(['snapshot_time_read', 'snapshot_deleted', 'index_written'], events)
+        self.assertEqual(1500, node_backup.snapshot_time)
+        add_snapshot_time.assert_called_once_with(storage, node_backup)
+
+    def test_do_backup_does_not_read_snapshot_time_when_pitr_disabled(self):
+        _, add_snapshot_time, snapshot, storage, node_backup = self._run_do_backup(pitr_enabled=False)
+
+        snapshot.get_snapshot_time.assert_not_called()
+        self.assertIsNone(node_backup.snapshot_time)
+        add_snapshot_time.assert_called_once_with(storage, node_backup)
+
+    def test_do_backup_does_not_set_snapshot_time_when_there_is_none(self):
+        _, add_snapshot_time, _, storage, node_backup = self._run_do_backup(pitr_enabled=True, snapshot_time=None)
+
+        self.assertIsNone(node_backup.snapshot_time)
+        add_snapshot_time.assert_called_once_with(storage, node_backup)
+
+    def test_do_backup_with_pitr_disabled_uploads_no_snapshot_time_blob(self):
+        # exercise the real index function: no snapshot_time blob must be uploaded
+        snapshot = MagicMock()
+        snapshot.__enter__.return_value = snapshot
+        cassandra = MagicMock()
+        cassandra.create_snapshot.return_value = snapshot
+        node_backup = MagicMock()
+        node_backup.is_dse_6 = False
+        node_backup.snapshot_time = None
+        storage = MagicMock()
+        storage.prefix_path = ''
+
+        with patch('medusa.backup_node.backup_snapshots', return_value=(1, 0, 0)), \
+                patch('medusa.backup_node.add_backup_finish_to_index'), \
+                patch('medusa.backup_node.set_latest_backup_in_index'):
+            backup_node.do_backup(cassandra, node_backup, storage, False, 1, 'backup1', pitr_enabled=False)
+
+        storage.storage_driver.upload_blob_from_string.assert_not_called()
+
+    def test_is_pitr_enabled(self):
+        self.assertFalse(backup_node.is_pitr_enabled(self.medusa_config))
+        self.assertFalse(backup_node.is_pitr_enabled(MagicMock(pitr=None)))
+        self.assertFalse(backup_node.is_pitr_enabled(MagicMock(pitr=MagicMock(enabled='false'))))
+        self.assertTrue(backup_node.is_pitr_enabled(MagicMock(pitr=MagicMock(enabled='true'))))
+        self.assertTrue(backup_node.is_pitr_enabled(MagicMock(pitr=MagicMock(enabled=True))))
+
     @patch("medusa.storage")
     @patch("medusa.storage.node_backup.NodeBackup")
     def test_check_already_uploaded(self, mock_storage, mock_node_backup):
@@ -122,10 +213,13 @@ class BackupNodeTest(unittest.TestCase):
             mock_storage,
             mock_node_backup,
             multipart_threshold=100,
+            multipart_chunksize=None,
             enable_md5_checks=False,
+            md5_check_concurrency=2,
             files_in_storage=files_in_storage,
             keyspace='keyspace1',
-            srcs=table1_srcs
+            srcs=table1_srcs,
+            fqtn='keyspace1.table1'
         )
 
         self.assertEqual(list(), table1_backup)
@@ -144,10 +238,13 @@ class BackupNodeTest(unittest.TestCase):
             mock_storage,
             mock_node_backup,
             multipart_threshold=100,
+            multipart_chunksize=None,
             enable_md5_checks=False,
+            md5_check_concurrency=2,
             files_in_storage=files_in_storage,
             keyspace='keyspace1',
-            srcs=table1_index_srcs
+            srcs=table1_index_srcs,
+            fqtn='keyspace1.table1'
         )
         # the first file was not in storage, so we need to reuplaod it
         self.assertEqual([table1_index_srcs[0]], t1_idx_backup)
@@ -164,15 +261,74 @@ class BackupNodeTest(unittest.TestCase):
             mock_storage,
             mock_node_backup,
             multipart_threshold=100,
+            multipart_chunksize=None,
             enable_md5_checks=False,
+            md5_check_concurrency=2,
             files_in_storage=files_in_storage,
             keyspace='keyspace2',
             srcs=table2_srcs,
+            fqtn='keyspace2.table2'
         )
         self.assertEqual([], t2_backup)
         # the file shows up in the reupload list because it's in the storage, but not at a different shape
         self.assertEqual([table2_srcs[0]], t2_reupload)
         self.assertEqual([], t2_already_up)
+
+    @patch("medusa.storage")
+    @patch("medusa.storage.node_backup.NodeBackup")
+    def test_check_already_uploaded_respects_md5_check_concurrency(self, mock_storage, mock_node_backup):
+        mock_node_backup.is_differential = True
+
+        file_count = 4
+        files_in_storage = {
+            'keyspace1': {
+                'table1-cfid': {
+                    f'nb-1-file{i}-Data.db': ManifestObject(f'nb-1-file{i}-Data.db', 100, 'whatever')
+                    for i in range(file_count)
+                }
+            }
+        }
+        srcs = [
+            pathlib.Path(f'/foo/bar/data/keyspace1/table1-cfid/snapshots/snapshot-name/nb-1-file{i}-Data.db')
+            for i in range(file_count)
+        ]
+
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def fake_file_matches_storage(src, cached_item, threshold, enable_md5_checks, chunk_size):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.1)
+            with lock:
+                active -= 1
+            return True
+
+        mock_storage.storage_driver.file_matches_storage = fake_file_matches_storage
+
+        start = time.monotonic()
+        _, _, already_up = check_already_uploaded(
+            mock_storage,
+            mock_node_backup,
+            multipart_threshold=100,
+            multipart_chunksize=None,
+            enable_md5_checks=True,
+            md5_check_concurrency=2,
+            files_in_storage=files_in_storage,
+            keyspace='keyspace1',
+            srcs=srcs,
+            fqtn='keyspace1.table1'
+        )
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(file_count, len(already_up))
+        # 2 workers on 4 files taking 0.1s each: parallelized takes ~0.2s (2 batches of 2),
+        # a fully sequential loop would take ~0.4s.
+        self.assertLess(elapsed, 0.35)
+        self.assertEqual(2, max_active)
 
 
 if __name__ == '__main__':

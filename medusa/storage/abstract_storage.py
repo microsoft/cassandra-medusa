@@ -25,19 +25,21 @@ import pathlib
 import typing as t
 
 from pathlib import Path
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
 
 
 BLOCK_SIZE_BYTES = 65536
-MULTIPART_PART_SIZE_IN_MB = 8
 MULTIPART_BLOCK_SIZE_BYTES = 65536
-MULTIPART_BLOCKS_PER_MB = 16
+# matches boto3's own TransferConfig default multipart_chunksize, used as a fallback
+# when the storage backend doesn't have a configured chunk size to pass in
+DEFAULT_MULTIPART_PART_SIZE_BYTES = 8 * 1024 * 1024
 MAX_UP_DOWN_LOAD_RETRIES = 5
 
 
-AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', 'last_modified'])
+AbstractBlob = collections.namedtuple('AbstractBlob', ['name', 'size', 'hash', 'last_modified', 'storage_class'])
 
-AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata', ['name', 'sse_enabled', 'sse_key_id'])
+AbstractBlobMetadata = collections.namedtuple('AbstractBlobMetadata',
+                                              ['name', 'sse_enabled', 'sse_key_id', 'sse_customer_key_md5'])
 
 ManifestObject = collections.namedtuple('ManifestObject', ['path', 'size', 'MD5'])
 
@@ -64,18 +66,18 @@ class AbstractStorage(abc.ABC):
     def disconnect(self):
         raise NotImplementedError
 
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def list_objects(self, path=None):
         # List objects in the bucket/container that have the corresponding prefix (emtpy means all objects)
         logging.debug("[Storage] Listing objects in {}".format(path if path is not None else 'everywhere'))
 
-        objects = self.list_blobs(prefix=path)
+        # Not filtering by size: some SSTable components are legitimately 0 bytes by design
+        # (e.g. BTI's Rows.db when partitions don't need a row index, see BtiFormat.md), and
+        # manifest validation needs to see them. Azure's hierarchical-namespace directory
+        # placeholders are excluded in AzureStorage._list_blobs instead.
+        return self.list_blobs(prefix=path)
 
-        objects = list(filter(lambda blob: blob.size > 0, objects))
-
-        return objects
-
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def list_blobs(self, prefix=None):
         loop = self.get_or_create_event_loop()
         objects = loop.run_until_complete(self._list_blobs(prefix))
@@ -116,7 +118,7 @@ class AbstractStorage(abc.ABC):
             ]
             await asyncio.gather(*coros)
 
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def upload_blob_from_string(self, path, content, encoding="utf-8"):
         headers = self.additional_upload_headers()
 
@@ -155,7 +157,7 @@ class AbstractStorage(abc.ABC):
         chunks = [srcs[i:i + chunk_size] for i in range(0, len(srcs), chunk_size)]
         for chunk in chunks:
             coros = [self._download_blob(src, dest) for src in map(str, chunk)]
-            await asyncio.gather(*coros)
+            await self._gather_transfers(coros)
 
     @abc.abstractmethod
     async def _download_blob(self, src: str, dest: str):
@@ -173,18 +175,31 @@ class AbstractStorage(abc.ABC):
         return manifest_objects
 
     async def _upload_blobs(self, srcs: t.List[t.Union[Path, str]], dest: str) -> t.List[ManifestObject]:
-        coros = [self._upload_blob(src, dest) for src in map(str, srcs)]
-        manifest_objects = []
-        n = int(self.config.concurrent_transfers)
-        for chunk in [coros[i:i + n] for i in range(0, len(coros), n)]:
-            manifest_objects += await asyncio.gather(*chunk)
-        return manifest_objects
+        semaphore = asyncio.Semaphore(int(self.config.concurrent_transfers))
+
+        async def bounded_upload(src: str) -> ManifestObject:
+            async with semaphore:
+                return await self._upload_blob(src, dest)
+
+        return await self._gather_transfers(bounded_upload(src) for src in map(str, srcs))
+
+    @staticmethod
+    async def _gather_transfers(coros):
+        tasks = [asyncio.create_task(coro) for coro in coros]
+        try:
+            return await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     @abc.abstractmethod
     async def _upload_blob(self, src: str, dest: str) -> ManifestObject:
         raise NotImplementedError()
 
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def get_blob(self, path: t.Union[Path, str]):
         try:
             logging.debug("[Storage] Getting object {}".format(path))
@@ -205,14 +220,14 @@ class AbstractStorage(abc.ABC):
     async def _get_object(self, object_key: t.Union[Path, str]) -> AbstractBlob:
         raise NotImplementedError()
 
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def get_blob_content_as_string(self, path: t.Union[Path, str]):
         blob = self.get_blob(str(path))
         if blob is None:
             return None
         return self.read_blob_as_string(blob)
 
-    @retry(stop_max_attempt_number=7, wait_exponential_multiplier=10000, wait_exponential_max=120000)
+    @retry(stop=stop_after_attempt(7), wait=wait_exponential(multiplier=10, max=120))
     def get_blob_content_as_bytes(self, path: t.Union[Path, str]):
         blob = self.get_blob(str(path))
         return self.read_blob_as_bytes(blob)
@@ -297,12 +312,12 @@ class AbstractStorage(abc.ABC):
     async def _delete_object(self, obj: AbstractBlob):
         raise NotImplementedError()
 
-    @retry(stop_max_attempt_number=5, wait_fixed=5000)
+    @retry(stop=stop_after_attempt(5), wait=wait_fixed(5))
     def get_blobs_metadata(self, blob_keys):
         loop = self.get_or_create_event_loop()
         return loop.run_until_complete(self._get_blobs_metadata(blob_keys))
 
-    @retry(stop_max_attempt_number=5, wait_fixed=5000)
+    @retry(stop=stop_after_attempt(5), wait=wait_fixed(5))
     def get_blob_metadata(self, blob_key: str) -> AbstractBlobMetadata:
         loop = self.get_or_create_event_loop()
         return loop.run_until_complete(self._get_blob_metadata(blob_key))
@@ -320,7 +335,7 @@ class AbstractStorage(abc.ABC):
     async def _get_blob_metadata(self, blob_key: str) -> AbstractBlobMetadata:
         # Only S3 really implements this because of the KMS support
         # Other storage providers don't do that for now
-        return AbstractBlobMetadata(blob_key, False, None)
+        return AbstractBlobMetadata(blob_key, False, None, None)
 
     @staticmethod
     def generate_md5_hash(src, block_size=BLOCK_SIZE_BYTES):
@@ -342,12 +357,13 @@ class AbstractStorage(abc.ABC):
         return base64_md5
 
     @staticmethod
-    def md5_multipart(src):
+    def md5_multipart(src, part_size_bytes=None):
+        part_size_bytes = part_size_bytes or DEFAULT_MULTIPART_PART_SIZE_BYTES
         eof = False
         hash_list = []
         with open(str(src), 'rb') as f:
             while eof is False:
-                (md5_hash, eof) = AbstractStorage.md5_part(f)
+                (md5_hash, eof) = AbstractStorage.md5_part(f, part_size_bytes)
                 hash_list.append(md5_hash)
 
         multipart_hash = hashlib.md5(b''.join(hash_list)).hexdigest()
@@ -355,15 +371,17 @@ class AbstractStorage(abc.ABC):
         return '%s-%d' % (multipart_hash, len(hash_list))
 
     @staticmethod
-    def md5_part(f):
+    def md5_part(f, part_size_bytes):
         hash_md5 = hashlib.md5()
         eof = False
-        for i in range(MULTIPART_PART_SIZE_IN_MB * MULTIPART_BLOCKS_PER_MB):
-            chunk = f.read(MULTIPART_BLOCK_SIZE_BYTES)
+        bytes_read = 0
+        while bytes_read < part_size_bytes:
+            chunk = f.read(min(MULTIPART_BLOCK_SIZE_BYTES, part_size_bytes - bytes_read))
             if chunk == b'':
                 eof = True
                 break
             hash_md5.update(chunk)
+            bytes_read += len(chunk)
         return hash_md5.digest(), eof
 
     @staticmethod
@@ -403,7 +421,8 @@ class AbstractStorage(abc.ABC):
 
     @staticmethod
     @abc.abstractmethod
-    def file_matches_storage(src: pathlib.Path, cached_item: ManifestObject, threshold=None, enable_md5_checks=False):
+    def file_matches_storage(src: pathlib.Path, cached_item: ManifestObject, threshold=None, enable_md5_checks=False,
+                             chunk_size=None):
         """
         Compares a local file with its version in the storage backend. This happens when doing an actual backup.
 
@@ -415,6 +434,8 @@ class AbstractStorage(abc.ABC):
         :param threshold: files bigger than this are digested by chunks
         :param enable_md5_checks: boolean flag to enable md5 file generation and comparison to the md5
                 found in the manifest (only applicable to some cloud storage implementations that compare md5 hashes)
+        :param chunk_size: size of the chunks used to digest files bigger than the threshold. Must match the
+                multipart chunk size the storage backend actually uploaded with, or the digest won't match.
         :return: boolean informing if the files match or not
         """
         pass
@@ -442,6 +463,12 @@ class AbstractStorage(abc.ABC):
         """
         return {}
 
+    def get_storage_class(self):
+        if self.config.storage_class is not None:
+            return self.config.storage_class.upper()
+        else:
+            return None
+
     @staticmethod
     def human_readable_size(size, decimal_places=3):
         for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
@@ -468,4 +495,14 @@ class AbstractStorage(abc.ABC):
                 size = float(cleaned_size_str.rstrip(unit))
                 return int(size * multiplier)
 
-        raise ValueError(f"Invalid human-friendly size format: {size_str}")
+        # no unit suffix: accept whole numbers as a byte count (e.g. legacy config values).
+        # Fractional values (e.g. "1.5") are rejected — use a unit suffix instead.
+        try:
+            value = float(cleaned_size_str)
+        except ValueError:
+            raise ValueError(f"Invalid human-friendly size format: {size_str}")
+
+        if value != int(value):
+            raise ValueError(f"Invalid human-friendly size format: {size_str}")
+
+        return int(value)

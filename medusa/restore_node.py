@@ -100,7 +100,8 @@ def restore_node_locally(config, temp_dir, backup_name, in_place, keep_auth, see
     clean_path(cassandra.commit_logs_path, use_sudo, keep_folder=True)
 
     if node_backup.is_dse:
-        clean_path(cassandra.dse_metadata_path, use_sudo, keep_folder=True)
+        if node_backup.is_dse_6:
+            clean_path(cassandra.dse_metadata_path, use_sudo, keep_folder=True)
         clean_path(cassandra.dse_search_path, use_sudo, keep_folder=True)
 
     # move backup data to Cassandra data directory according to system table
@@ -251,7 +252,7 @@ def keyspace_is_allowed_to_restore(keyspace, keep_auth, fqtns_to_restore):
 
     # a keyspace is allowed to restore if there is at least one fqtn from this keyspace
     # so we get keyspaces from all the fqtns and make it a set to remove duplicates
-    keyspaces_to_restore = set(map(lambda fqtn: fqtn.split('.')[0], fqtns_to_restore))
+    keyspaces_to_restore = {fqtn.split('.')[0] for fqtn in fqtns_to_restore}
     # then we check if the keyspace we are restoring is present in that set
     if keyspace not in keyspaces_to_restore:
         return False
@@ -369,7 +370,7 @@ def get_node_tokens(node_fqdn, token_map_file):
 def wait_for_seeds(config, seeds):
     seed_list = seeds.split(',')
     attempts = 0
-    while not any([is_node_up(config, s) for s in seed_list]):
+    while not any(is_node_up(config, s) for s in seed_list):
         logging.info('No seeds are up yet, will wait a minute')
         attempts += 1
         time.sleep(A_MINUTE)

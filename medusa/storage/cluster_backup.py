@@ -36,18 +36,32 @@ class ClusterBackup(object):
 
     @property
     def started(self):
-        return min(map(operator.attrgetter('started'), self.node_backups.values()))
+        return min(map(operator.attrgetter('started'), self.expected_node_backups()))
 
     @property
     def finished(self):
         if any(self.missing_nodes()):
             return None
 
-        finished_timestamps = list(map(operator.attrgetter('finished'), self.node_backups.values()))
-        if all(finished_timestamps):
+        finished_timestamps = list(map(operator.attrgetter('finished'), self.expected_node_backups()))
+        if finished_timestamps and all(finished_timestamps):
             return max(finished_timestamps)
         else:
             return None
+
+    def _snapshot_times(self):
+        snapshot_times = (node_backup.snapshot_time for node_backup in self.node_backups.values())
+        return [snapshot_time for snapshot_time in snapshot_times if snapshot_time is not None]
+
+    @property
+    def min_snapshot_time(self):
+        snapshot_times = self._snapshot_times()
+        return min(snapshot_times) if snapshot_times else None
+
+    @property
+    def max_snapshot_time(self):
+        snapshot_times = self._snapshot_times()
+        return max(snapshot_times) if snapshot_times else None
 
     @property
     def tokenmap(self):
@@ -66,31 +80,79 @@ class ClusterBackup(object):
         return "differential" if self._first_nodebackup.is_differential else "full"
 
     def is_complete(self):
-        return not self.missing_nodes() and all(map(operator.attrgetter('finished'), self.node_backups.values()))
+        expected_node_backups = self.expected_node_backups()
+        return not self.missing_nodes() and bool(expected_node_backups) \
+            and all(map(operator.attrgetter('finished'), expected_node_backups))
 
     def missing_nodes(self):
         return set(self.tokenmap.keys()) - set(self.node_backups.keys())
 
+    def expected_node_backups(self):
+        return [self.node_backups[fqdn]
+                for fqdn in self.tokenmap
+                if fqdn in self.node_backups]
+
     def complete_nodes(self):
         return [node_backup
-                for node_backup in self.node_backups.values()
+                for node_backup in self.expected_node_backups()
                 if node_backup.finished]
 
     def incomplete_nodes(self):
         return [node_backup
-                for node_backup in self.node_backups.values()
+                for node_backup in self.expected_node_backups()
                 if node_backup.finished is None]
 
     def size(self):
         return sum(
             node_backup.size()
-            for node_backup in self.node_backups.values()
+            for node_backup in self.expected_node_backups()
             if node_backup.finished
         )
 
     def num_objects(self):
         return sum(
             node_backup.num_objects()
-            for node_backup in self.node_backups.values()
+            for node_backup in self.expected_node_backups()
             if node_backup.finished
         )
+
+    def to_json_dict(self):
+        nodes_list = []
+        incomplete_nodes_list = []
+        total_size = 0
+        total_objects = 0
+        for node_backup in self.node_backups.values():
+            node_dict = {
+                'fqdn': node_backup.fqdn,
+                'started': node_backup.started,
+                'finished': node_backup.finished,
+                'server_type': node_backup.server_type,
+                'release_version': node_backup.release_version
+            }
+            if node_backup.finished:
+                node_size = node_backup.size()
+                node_objects = node_backup.num_objects()
+                node_dict['size'] = node_size
+                node_dict['num_objects'] = node_objects
+                nodes_list.append(node_dict)
+                total_size += node_size
+                total_objects += node_objects
+            else:
+                node_dict['size'] = 0
+                node_dict['num_objects'] = 0
+                incomplete_nodes_list.append(node_dict)
+        missing_nodes = self.missing_nodes()
+        return {
+            'name': self.name,
+            'started': self.started,
+            'finished': self.finished,
+            'backup_type': self.backup_type,
+            'size': total_size,
+            'num_objects': total_objects,
+            'completed_nodes': len(nodes_list),
+            'nodes': nodes_list,
+            'incomplete_nodes': len(incomplete_nodes_list),
+            'incomplete_nodes_list': incomplete_nodes_list,
+            'missing_nodes': len(missing_nodes),
+            'missing_nodes_list': list(missing_nodes)
+        }

@@ -1,5 +1,140 @@
 ## Change Log
 
+### 0.31.1 (2026-10-30) 16:00 +00:00
+
+- Version bumps to fix CVEs (#1041) (@rzvoncek)
+
+### 0.31.0 (2026-10-21) 16:00 +00:00
+
+- Bump certifi from 2026.2.25 to 2026.10.19 (#1016) (@dependabot)
+- Bump multidict from 6.7.1 to 6.9.1 (#1012) (@dependabot)
+- Bump aiohttp from 3.14.3 to 3.14.4 (#1011) (@dependabot)
+- Drop Python 3.10 supprt (#1015) (@rzvoncek)
+- Log the backup name and mode when a backup completes (#1009) (@Ranexia04)
+- Mask the nodetool password in logged commands (#1008) (@sankalpsthakur)
+- Bump pyjwt from 2.13.0 to 2.15.0 (#1007) (@dependabot)
+- Bump virtualenv from 21.2.4 to 21.7.13 (#1006) (@dependabot)
+- Bump urllib3 from 2.7.0 to 2.8.0 (#1005) (@dependabot)
+- handle missing md5Hash in GCS responses when CMEK is enabled (#1000) (@artsiom-bukhautsou)
+- Return ITs against IBM storage (#991) (@rzvoncek)
+- Fix minio ITs - use mc docker instead of binary (#999) (@rzvoncek)
+- Exclude the unexpected nodes in backup summary for startTime, totalSize and totalObjects (#987) (@ShreyashD333)
+- Ensure failing async operations with Azure close all FDs (#990) (@burmanm)
+
+
+### 0.30.0 (2026-08-06) 16:00 +00:00
+
+- Configurable multipart chunks (#979) (@rzvoncek)
+- Parallelize MD5 checksum comparison and add debug progress logging (#972) (@arodrime)
+- Fix verify and purge: zero-byte SSTable components and multipart ETag crash (#971) (@arodrime)
+- Fix GetBackups error response status field (#968) (@fuqi1001)
+- Fix backup summary node accounting for unexpected node backups (#966) (@ISemene4kaI)
+- Bump pyjwt from 2.12.0 to 2.13.0 (#962) (@dependabot)
+- Bump pyasn1 from 0.6.3 to 0.6.4 (#975) (@dependabot)
+- Bump setuptools from 78.1.1 to 83.0.0 (#976) (@dependabot)
+- Bump aiohttp from 3.13.4 to 3.14.3 (#980) (@dependabot)
+- Fix S3 upload regressions from the libcloud→boto3 transition (connection pool, threshold mismatch, chunk size, parallelism, S3-compatible fix) (#969) (@arodrime)
+- Enable ITs with S3 on master (#977) (@rzvoncek)
+
+### 0.29.1 (2026-07-07) 16:00 +00:00
+
+- Pin msgpack to address CVEs (#970) (@rzvoncek)
+- Bump pyOpenSSL and cryptography to address CVEs (#967) (@rzvoncek)
+
+### 0.29.0 (2026-06-02) 16:00 +00:00
+
+- Fix Azure upload seek error by passing AsyncIterable to upload_blob (@Ranexia04)
+- Bump dependencies to limit CVEs (@rzvoncek)
+- Bump idna from 3.11 to 3.15 (@dependabot)
+
+### 0.28.0 (2026/04/17) 16:00 +00:00
+
+- Bump parallel-ssh to 2.14.0 to better handle disconnections (@Skunnyk)
+- Feature: Implement concurrent_transfers for GCS storage (@andyfoston)
+- Bump aiohttp from 3.13.3 to 3.13.4 (@pauloricardomg)
+- Bump requests from 2.32.4 to 2.33.0 (@dependabot)
+- Bump requests from 2.32.4 to 2.33.0 (@dependabot)
+- Fix the backups for DSE 5.1 clusters, broken since version 0.17.0 (@alberto-bortolan)
+- Fix tenacity wait_fixed values still in milliseconds for S3 and Azure (@idleyoungman)
+- medusa-example.ini: add reference to nodetool_executable (@tobast)
+- Fix forgotten conflict in pyproject.toml (@rzvoncek)
+
+### 0.27.1 (2026/04/03) 05:27 +00:00
+- Fix CVEs (@adejanovski)
+
+### 0.27.0 (2026/01/07) 16:00 +00:00
+- Bump aiohttp from 3.12.14 to 3.13.3 (@dependabot)
+- Bump urllib3 from 2.5.0 to 2.6.0 (@dependabot)
+- Bump filelock from 3.19.1 to 3.20.1 (@dependabot)
+- Add TLS server and client support for gRPC (@burmanm)
+- Add JSON output for status and list-backups commands. (@woblerr)
+
+### 0.26.0 (2025/11/06) 15:19 +00:00
+- Expand documentation on concurrent transfers (#780) (@rzvoncek)
+- Update azure_storage.py (#889) (@gfnord)
+- Update dev-setup.md (#902) (@fasar)
+- Fix asyncio timeouts for GCS storage (#903) (@andyfoston)
+- Upgrade the boto and urllib3 deps, requires Python >=3.10 (#897) (@adejanovski)
+- Switch the retry lib to one compatible with asyncio (#896) (@garrynigel)
+
+### 0.25.1 (2025/09/25 16:09 +00:00)
+- Change how the Boto S3 client is created with default parameters (#888) (@idleyoungman)
+
+### 0.25.0 (2025/07/30 12:17 +00:00)
+- Change how the Boto S3 client is created with default parameters (#882) (@adejanovski)
+- Build a ubi9-minimal based image for Medusa (#880) (@adejanovski)
+- Upgrade dependencies to fix CVEs (#879) (@adejanovski)
+- Sonarcloud improvements (#875) (@rzvoncek)
+- Fix tests for - Support for S3 SSE-C #867 (#872) (@rzvoncek)
+- 851 Backup Without Snapshot Creation & Deletion - Finishing Touches (#871) (@rzvoncek)
+- Bump idna to >= 3.7 (#848) (@dannf)
+- enable build for Debian/Bullseye+Bookworm (#529) (@rtib)
+- Remove default value for storage read_timeout (#864) (@mlallaouret)
+
+### 0.24.1 (2025/06/13 12:00 +00:00)
+- Build images off Ubuntu 24.04 + few python dep updates (#865) (@rzvoncek, @emerkle826)
+
+### 0.24.0 (2025/04/04 12:00 +00:00)
+- Add Python 3.12 support (#849) (@rzvoncek)
+- Bump versions of some python deps + grpc health probe (#857) (@rzvoncek)
+- Allow using role-based identity for Azure storage (#854) (@rzvoncek)
+
+### 0.23.0 (2025/01/14 12:00 +00:00)
+- Added ssh keepalive and pseudo terminal support to orchestrator (#804) (@alberto-bortolan)
+- Handle updated Summary.db components (#812) (@rzvoncek)
+- Make read_timeout default to None, only use it if set (#813) (@rzvoncek)
+- Added configuration parameter grpc.port to make the gRPC server port configurable (#821) (@alberto-bortolan)
+- Bump certifi from 2024.2.2 to 2024.7.4 (#788) (@dependabot)
+- Bump setuptools from 69.5.1 to 70.0.0 (#792) (@dependabot)
+- Add support for using an attached GCE service account (#827) 
+- Add flag to enable login shells (#828) (@rzvoncek, @pstef)
+- Update poetry-core version to be <2.0.0 (#844) (@andyfoston)
+- Fix the k8ssandra-operator ITs - MED-118 (#838) (@rzvoncek)
+- Disable the MD5 calculation when retrieving the list of files from local storage (#831) (@alberto-bortolan)
+- Multipart chunksize (#807) (@SoaigM)
+- Bump requests from 2.31.0 to 2.32.0 (#783) (@dependabot)
+- Support s3 address style config (#835) (@dispensable)
+- Bump aiohttp from 3.9.4 to 3.10.11 (#846) (@dependabot)
+
+### 0.22.3 (2024/10/02 16:00 +00:00)
+- Propagate Medusa process exit code in k8s docker-entrypoint (#806) (@c3-clement)
+
+### 0.22.2 (2024/08/16 16:00 +00:00)
+- Do not install docker-compose in release-debian CI step (#801) (@rzvoncek)
+
+### 0.22.1 (2024/08/15 16:00 +00:00)
+- Do not set storage class for GCP (it's not supported anyway) (#800) (@rzvoncek)
+- Fix backup man future registration and BackupStatus computation of the node backup state (#799) (@adejanovski)
+
+### 0.22.0 (2024/07/19 16:00 +00:00)
+- Bump urllib3 from 1.26.18 to 1.26.19 (#784) (@dependabot)
+- Ignore blank likes in host_list file (#761) (@VenkataNaladala94)
+- Allow specifying storage classes (#777) (@maburadeh, @adejanovski, @rzvoncek)
+- Bump azure-identity from 1.14.0 to 1.16.1 (#776) (@dependabot)
+- Adding support to build images for multiple architectures (#760) (@EmanuelSanchez, @adejanovski)
+- Make object store read timeout configurable (#763) (@rzvoncek)
+- Fix a bug where 'None' got into the path prefix we actually list with (#770) (@rzvoncek)
+
 ### 0.21.0 (2024/05/06 16:55 +00:00)
 - Prevent gRRPC's BackupStatus from canceling pending futures (#745) (@rzvoncek)
 - Fix to enable the creation of backups when a backup name is not provided (#758) (@VenkataNaladala94)

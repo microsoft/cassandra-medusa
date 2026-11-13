@@ -23,8 +23,11 @@ from medusa.service.grpc import medusa_pb2_grpc
 
 
 class Client:
-    def __init__(self, target, channel_options=[]):
-        self.channel = grpc.aio.insecure_channel(target, options=channel_options)
+    def __init__(self, target, channel_options=[], tls_credentials=None):
+        if tls_credentials:
+            self.channel = grpc.aio.secure_channel(target, tls_credentials, options=channel_options)
+        else:
+            self.channel = grpc.aio.insecure_channel(target, options=channel_options)
 
     async def health_check(self):
         try:
@@ -104,7 +107,7 @@ class Client:
     async def backup_exists(self, name):
         try:
             backups = await self.get_backups()
-            for backup in list(backups):
+            for backup in backups:
                 if backup.backupName == name:
                     return True
             return False

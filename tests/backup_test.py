@@ -13,12 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import pathlib
 import unittest
 
 from medusa.storage.abstract_storage import ManifestObject
 from medusa.storage.google_storage import GoogleStorage
 from medusa.storage.s3_storage import S3Storage
+
+
+def s3_multipart_etag(data: bytes, part_size_bytes: int) -> str:
+    # independent reimplementation of S3's multipart ETag formula, so tests don't just
+    # assert the code under test agrees with itself
+    parts = [data[i:i + part_size_bytes] for i in range(0, len(data), part_size_bytes)]
+    concatenated_part_digests = b''.join(
+        hashlib.md5(part, usedforsecurity=False).digest() for part in parts
+    )
+    return '{}-{}'.format(hashlib.md5(concatenated_part_digests, usedforsecurity=False).hexdigest(), len(parts))
 
 
 class RestoreNodeTest(unittest.TestCase):
@@ -43,11 +54,67 @@ class RestoreNodeTest(unittest.TestCase):
         src = pathlib.Path(__file__).parent / "resources/s3/md-10-big-CompressionInfo.db"
         assert not S3Storage.file_matches_storage(src, cached_item, 100 * 1024 * 1024, True)
 
+    def test_multi_part_s3_file_uses_configured_chunk_size(self):
+        # part size must match what boto3 actually used to upload, or the multipart hash won't match
+        src = pathlib.Path(__file__).parent / "resources/s3/md-10-big-CompressionInfo.db"
+        data = src.read_bytes()
+        chunk_size_bytes = 50 * 1024
+        expected_hash = s3_multipart_etag(data, chunk_size_bytes)
+        cached_item = ManifestObject('path', len(data), expected_hash)
+        assert S3Storage.file_matches_storage(src, cached_item, 100, True, '50KB')
+
+    def test_multi_part_s3_file_wrong_chunk_size_fails(self):
+        # hash was computed with 50KB parts, but verification assumes the 8MB default: must not match
+        src = pathlib.Path(__file__).parent / "resources/s3/md-10-big-CompressionInfo.db"
+        data = src.read_bytes()
+        expected_hash = s3_multipart_etag(data, 50 * 1024)
+        cached_item = ManifestObject('path', len(data), expected_hash)
+        assert not S3Storage.file_matches_storage(src, cached_item, 100, True)
+
     def test_gcs_file(self):
-        # GCS hashes are b64 encoded
-        cached_item = ManifestObject('path', 148906, '2c6QmQGESWilicKJiNY1NQ==')
         src = pathlib.Path(__file__).parent / "resources/gcs/lb-21-big-Index.db"
-        assert GoogleStorage.file_matches_storage(src, cached_item, True)
+
+        cases = [
+            {
+                'name': 'matching size and matching hash with md5 checks enabled',
+                'cached_item': ManifestObject('path', 148906, '2c6QmQGESWilicKJiNY1NQ=='),
+                'enable_md5_checks': True,
+                'expected': True,
+            },
+            {
+                'name': 'cmek missing hash in manifest with md5 checks enabled',
+                'cached_item': ManifestObject('path', 148906, None),
+                'enable_md5_checks': True,
+                'expected': True,
+            },
+            {
+                'name': 'cmek missing hash in manifest with md5 checks disabled',
+                'cached_item': ManifestObject('path', 148906, None),
+                'enable_md5_checks': False,
+                'expected': True,
+            },
+            {
+                'name': 'cmek missing hash in manifest with size mismatch',
+                'cached_item': ManifestObject('path', 999999, None),
+                'enable_md5_checks': True,
+                'expected': False,
+            },
+            {
+                'name': 'mismatched hash with md5 checks enabled',
+                'cached_item': ManifestObject('path', 148906, 'YgwgNSBJS7koEf3cbYjNZQ=='),
+                'enable_md5_checks': True,
+                'expected': False,
+            },
+        ]
+
+        for tc in cases:
+            result = GoogleStorage.file_matches_storage(
+                src=src,
+                cached_item=tc['cached_item'],
+                enable_md5_checks=tc['enable_md5_checks'],
+            )
+
+            self.assertEqual(tc['expected'], result)
 
 
 if __name__ == '__main__':

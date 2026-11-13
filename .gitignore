@@ -12,6 +12,7 @@ __pycache__/
 /dist/
 /packages/
 /venv/
+.venv
 /scripts/venv/
 medusa.iml
 /*.egg-info/
@@ -31,3 +32,4 @@ coverage.xml
 pytest.ini
 .python-version
 tests/resources/dse/dse-*
+docs/tickets

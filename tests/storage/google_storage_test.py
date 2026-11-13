@@ -13,13 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import aiohttp
+import io
 import itertools
+import tempfile
 import types
 import unittest
 
+from unittest import mock
 from pathlib import Path
 
-from medusa.storage.google_storage import _group_by_parent, _is_in_folder
+from tenacity import RetryError
+from medusa.storage.google_storage import (
+    _group_by_parent, _is_in_folder, GoogleStorage,
+    DOWNLOAD_STREAM_CONSUMPTION_CHUNK_SIZE, MAX_UP_DOWN_LOAD_RETRIES,
+)
 
 
 class GoogleStorageTest(unittest.TestCase):
@@ -59,3 +68,347 @@ class GoogleStorageTest(unittest.TestCase):
         rr = list(c)
         self.assertTrue(isinstance(rr, list))
         self.assertTrue(isinstance(rr[0], int))
+
+    def test_upload_object_rate_limit_retry(self):
+
+        # Create a dummy config
+        class DummyConfig:
+            key_file = None
+            bucket_name = 'dummy-bucket'
+            read_timeout = -1
+        storage = GoogleStorage(DummyConfig())
+        storage._ensure_session = lambda: None  # Bypass session creation
+        storage.gcs_storage = mock.Mock()
+
+        # Simulate upload always raising 429
+        async def always_429(*args, **kwargs):
+            raise aiohttp.ClientResponseError(
+                request_info=mock.Mock(),
+                history=(),
+                status=429,
+                message='Too Many Requests',
+                headers={}
+            )
+        storage.gcs_storage.upload = always_429
+
+        # Count how many times the upload is called
+        call_counter = {'count': 0}
+
+        async def counting_upload(*args, **kwargs):
+            call_counter['count'] += 1
+            raise aiohttp.ClientResponseError(
+                request_info=mock.Mock(),
+                history=(),
+                status=429,
+                message='Too Many Requests',
+                headers={}
+            )
+        storage.gcs_storage.upload = counting_upload
+
+        # Run the upload and expect it to raise after max retries
+        with self.assertRaises(RetryError):
+            asyncio.run(storage._upload_object(io.BytesIO(b'data'), 'key', {}))
+        self.assertEqual(call_counter['count'], MAX_UP_DOWN_LOAD_RETRIES)
+
+    def _make_gcs_storage(self, extra_config=None):
+        """Build a GoogleStorage instance with a minimal config, bypassing session creation."""
+        class DummyConfig:
+            key_file = None
+            bucket_name = 'dummy-bucket'
+            read_timeout = -1
+            concurrent_transfers = '0'
+
+        if extra_config:
+            for k, v in extra_config.items():
+                setattr(DummyConfig, k, v)
+
+        storage = GoogleStorage(DummyConfig())
+        storage._ensure_session = lambda: None
+        return storage
+
+    def _make_fake_stream(self, data: bytes):
+        """Return an async-compatible stream backed by in-memory bytes."""
+        buf = io.BytesIO(data)
+
+        class FakeStream:
+            async def read(self, size=-1):
+                return buf.read(size)
+
+        return FakeStream()
+
+    def test_download_blob_uses_multipart_chunksize(self):
+        storage = self._make_gcs_storage({'multipart_chunksize': '10MB'})
+        self.assertEqual(10 * 1024 * 1024, storage.multipart_chunksize_bytes)
+
+        fake_stream = self._make_fake_stream(b'tiny payload')
+        fake_blob = mock.MagicMock()
+        fake_blob.name = 'some/object'
+
+        read_sizes = []
+        original_read = fake_stream.read
+
+        async def recording_read(size=-1):
+            read_sizes.append(size)
+            return await original_read(size)
+
+        fake_stream.read = recording_read
+
+        storage.gcs_storage = mock.AsyncMock()
+        storage.gcs_storage.download_stream = mock.AsyncMock(return_value=fake_stream)
+
+        async def fake_stat(key):
+            return fake_blob
+
+        storage._stat_blob = fake_stat
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            asyncio.run(storage._download_blob('some/object', tmp_dir))
+
+        self.assertTrue(all(s == 10 * 1024 * 1024 for s in read_sizes))
+
+    def test_download_blob_uses_default_chunk_size_when_not_configured(self):
+        storage = self._make_gcs_storage()  # no multipart_chunksize
+        self.assertEqual(DOWNLOAD_STREAM_CONSUMPTION_CHUNK_SIZE, storage.multipart_chunksize_bytes)
+
+        fake_stream = self._make_fake_stream(b'tiny payload')
+        fake_blob = mock.MagicMock()
+        fake_blob.name = 'some/object'
+
+        read_sizes = []
+        original_read = fake_stream.read
+
+        async def recording_read(size=-1):
+            read_sizes.append(size)
+            return await original_read(size)
+
+        fake_stream.read = recording_read
+
+        storage.gcs_storage = mock.AsyncMock()
+        storage.gcs_storage.download_stream = mock.AsyncMock(return_value=fake_stream)
+
+        async def fake_stat(key):
+            return fake_blob
+
+        storage._stat_blob = fake_stat
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            asyncio.run(storage._download_blob('some/object', tmp_dir))
+
+        self.assertTrue(all(s == DOWNLOAD_STREAM_CONSUMPTION_CHUNK_SIZE for s in read_sizes))
+
+    def test_list_blobs(self):
+        storage = self._make_gcs_storage()
+
+        cases = [
+            {
+                'name': 'standard object with md5Hash',
+                'items': [
+                    {
+                        'name': 'cluster/node/backup_index',
+                        'size': '1024',
+                        'md5Hash': 'dGVzdGhhc2g=',
+                        'timeCreated': '2026-08-04T09:06:35.552Z',
+                        'storageClass': 'STANDARD',
+                    }
+                ],
+                'expected_hash': 'dGVzdGhhc2g=',
+            },
+            {
+                'name': 'cmek object without md5Hash',
+                'items': [
+                    {
+                        'name': 'cluster/node/backup_index',
+                        'size': '1024',
+                        'timeCreated': '2026-08-04T09:06:35.552Z',
+                        'storageClass': 'STANDARD',
+                    }
+                ],
+                'expected_hash': None,
+            },
+        ]
+
+        for tc in cases:
+            storage.gcs_storage = mock.AsyncMock()
+            storage.gcs_storage.list_objects = mock.AsyncMock(return_value={'items': tc['items']})
+
+            blobs = asyncio.run(storage._list_blobs())
+
+            self.assertEqual(len(tc['items']), len(blobs))
+            self.assertEqual(tc['expected_hash'], blobs[0].hash)
+
+    def test_stat_blob(self):
+        storage = self._make_gcs_storage()
+
+        cases = [
+            {
+                'name': 'standard object with md5Hash',
+                'blob_meta': {
+                    'name': 'cluster/node/backup_index',
+                    'size': '1024',
+                    'md5Hash': 'dGVzdGhhc2g=',
+                    'timeCreated': '2026-08-04T09:06:35.552Z',
+                    'storageClass': 'STANDARD',
+                },
+                'expected_hash': 'dGVzdGhhc2g=',
+            },
+            {
+                'name': 'cmek object without md5Hash',
+                'blob_meta': {
+                    'name': 'cluster/node/backup_index',
+                    'size': '1024',
+                    'timeCreated': '2026-08-04T09:06:35.552Z',
+                    'storageClass': 'STANDARD',
+                },
+                'expected_hash': None,
+            },
+        ]
+
+        for tc in cases:
+            storage.gcs_storage = mock.AsyncMock()
+            storage.gcs_storage.download_metadata = mock.AsyncMock(return_value=tc['blob_meta'])
+
+            blob = asyncio.run(storage._stat_blob('cluster/node/backup_index'))
+
+            self.assertEqual(tc['expected_hash'], blob.hash)
+
+    def test_upload_object(self):
+        storage = self._make_gcs_storage()
+
+        cases = [
+            {
+                'name': 'standard upload response with md5Hash',
+                'response': {
+                    'name': 'cluster/node/backup_index',
+                    'size': '1024',
+                    'md5Hash': 'dGVzdGhhc2g=',
+                    'timeCreated': '2026-08-04T09:06:35.552Z',
+                },
+                'expected_hash': 'dGVzdGhhc2g=',
+            },
+            {
+                'name': 'cmek upload response without md5Hash',
+                'response': {
+                    'name': 'cluster/node/backup_index',
+                    'size': '1024',
+                    'timeCreated': '2026-08-04T09:06:35.552Z',
+                },
+                'expected_hash': None,
+            },
+        ]
+
+        for tc in cases:
+            storage.gcs_storage = mock.AsyncMock()
+            storage.gcs_storage.upload = mock.AsyncMock(return_value=tc['response'])
+
+            blob = asyncio.run(
+                storage._upload_object.__wrapped__(storage, io.BytesIO(b'data'), 'cluster/node/backup_index', {})
+            )
+
+            self.assertEqual(tc['expected_hash'], blob.hash)
+
+    def test_upload_blob(self):
+        storage = self._make_gcs_storage()
+
+        cases = [
+            {
+                'name': 'standard upload response with md5Hash',
+                'response': {
+                    'name': 'cluster/node/backup_index',
+                    'size': '1024',
+                    'md5Hash': 'dGVzdGhhc2g=',
+                },
+                'expected_hash': 'dGVzdGhhc2g=',
+            },
+            {
+                'name': 'cmek upload response without md5Hash',
+                'response': {
+                    'name': 'cluster/node/backup_index',
+                    'size': '1024',
+                },
+                'expected_hash': None,
+            },
+        ]
+
+        with tempfile.NamedTemporaryFile() as tmp_file:
+            tmp_file.write(b'data')
+            tmp_file.flush()
+
+            for tc in cases:
+                storage.gcs_storage = mock.AsyncMock()
+                storage.gcs_storage.upload = mock.AsyncMock(return_value=tc['response'])
+
+                manifest_obj = asyncio.run(
+                    storage._upload_blob.__wrapped__(storage, tmp_file.name, 'cluster/node/backup_index')
+                )
+
+                self.assertEqual(tc['expected_hash'], manifest_obj.MD5)
+
+    def test_compare_with_manifest(self):
+        cases = [
+            {
+                'name': 'matching size and matching hash',
+                'actual_size': 1024,
+                'size_in_manifest': 1024,
+                'actual_hash': '620c203520494bb92811fddc6d88cd65',
+                'hash_in_manifest': 'YgwgNSBJS7koEf3cbYjNZQ==',
+                'expected': True,
+            },
+            {
+                'name': 'matching size and none actual_hash',
+                'actual_size': 1024,
+                'size_in_manifest': 1024,
+                'actual_hash': None,
+                'hash_in_manifest': 'YgwgNSBJS7koEf3cbYjNZQ==',
+                'expected': True,
+            },
+            {
+                'name': 'matching size and none hash_in_manifest',
+                'actual_size': 1024,
+                'size_in_manifest': 1024,
+                'actual_hash': '620c203520494bb92811fddc6d88cd65',
+                'hash_in_manifest': None,
+                'expected': True,
+            },
+            {
+                'name': 'matching size and both hashes none',
+                'actual_size': 1024,
+                'size_in_manifest': 1024,
+                'actual_hash': None,
+                'hash_in_manifest': None,
+                'expected': True,
+            },
+            {
+                'name': 'mismatched size and none hash_in_manifest',
+                'actual_size': 1024,
+                'size_in_manifest': 2048,
+                'actual_hash': '620c203520494bb92811fddc6d88cd65',
+                'hash_in_manifest': None,
+                'expected': False,
+            },
+            {
+                'name': 'mismatched size and none actual_hash',
+                'actual_size': 1024,
+                'size_in_manifest': 2048,
+                'actual_hash': None,
+                'hash_in_manifest': 'YgwgNSBJS7koEf3cbYjNZQ==',
+                'expected': False,
+            },
+            {
+                'name': 'matching size and mismatched hash',
+                'actual_size': 1024,
+                'size_in_manifest': 1024,
+                'actual_hash': '620c203520494bb92811fddc6d88cd65',
+                'hash_in_manifest': '2c6QmQGESWilicKJiNY1NQ==',
+                'expected': False,
+            },
+        ]
+
+        for tc in cases:
+            result = GoogleStorage.compare_with_manifest(
+                actual_size=tc['actual_size'],
+                size_in_manifest=tc['size_in_manifest'],
+                actual_hash=tc['actual_hash'],
+                hash_in_manifest=tc['hash_in_manifest'],
+            )
+
+            self.assertEqual(tc['expected'], result)

@@ -42,6 +42,8 @@ class AttributeDict(dict):
 
 
 class StorageTest(unittest.TestCase):
+    TEST_FILE_CONTENT = "content of the test file1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.local_storage_dir = "/tmp/medusa_local_storage"
@@ -85,13 +87,13 @@ class StorageTest(unittest.TestCase):
         self.storage = Storage(config=self.config.storage)
 
     def test_add_object_from_string(self):
-        file_content = "content of the test file"
+        file_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test1/file.txt", file_content)
         self.assertEqual(self.storage.storage_driver.get_blob_content_as_string("test1/file.txt"), file_content)
 
     def test_download_blobs(self):
         files_to_download = list()
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         file2_content = "content of the test file2"
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         files_to_download.append("test_download_blobs1/file1.txt")
@@ -102,38 +104,38 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(len(os.listdir(self.local_storage_dir)), 2)
 
     def test_list_objects(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         file2_content = "content of the test file2"
         file3_content = ""
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs2/file2.txt", file2_content)
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs3/file3.txt", file3_content)
         objects = self.storage.storage_driver.list_objects()
-        self.assertEqual(len(objects), 2)
+        self.assertEqual(len(objects), 3)
         one_object = self.storage.storage_driver.list_objects("test_download_blobs2")
         self.assertEqual(len(one_object), 1)
 
     def test_read_blob(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         objects = self.storage.storage_driver.list_objects("test_download_blobs1")
         object_content = self.storage.storage_driver.read_blob_as_string(objects[0])
         self.assertEqual(object_content, file1_content)
 
     def test_get_blob(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         obj = self.storage.storage_driver.get_blob("test_download_blobs1/file1.txt")
         self.assertEqual(obj.name, "test_download_blobs1/file1.txt")
 
     def test_read_blob_as_bytes(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         object_content = self.storage.storage_driver.get_blob_content_as_bytes("test_download_blobs1/file1.txt")
-        self.assertEqual(object_content, b"content of the test file1")
+        self.assertEqual(object_content, self.TEST_FILE_CONTENT.encode())
 
     def test_verify_hash(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         manifest = self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         obj = self.storage.storage_driver.get_blob("test_download_blobs1/file1.txt")
         self.assertEqual(manifest.MD5, obj.hash)
@@ -194,7 +196,7 @@ class StorageTest(unittest.TestCase):
             self.assertNotEqual(digest_full, AbstractStorage.generate_md5_hash(tf.name, block_size=0))
 
     def test_get_object_datetime(self):
-        file1_content = "content of the test file1"
+        file1_content = self.TEST_FILE_CONTENT
         self.storage.storage_driver.upload_blob_from_string("test_download_blobs1/file1.txt", file1_content)
         obj = self.storage.storage_driver.get_blob("test_download_blobs1/file1.txt")
         self.assertEqual(
@@ -298,6 +300,37 @@ class StorageTest(unittest.TestCase):
         self.assertTrue("node1" in blobs_by_backup["backup2"])
         self.assertFalse("node2" in blobs_by_backup["backup2"])
 
+    def test_build_indices_restores_snapshot_time_from_backup_meta(self):
+        driver = self.storage.storage_driver
+        prefix_path = self.storage.prefix_path
+        # backup1 has snapshot time in its meta, backup2 does not (e.g. it was made before PITR)
+        for backup_name in ('backup1', 'backup2'):
+            for meta_file in ('tokenmap.json', 'manifest.json', 'schema.cql'):
+                driver.upload_blob_from_string(
+                    "{}node1/{}/meta/{}".format(prefix_path, backup_name, meta_file), "content")
+        driver.upload_blob_from_string("{}node1/backup1/meta/snapshot_time.txt".format(prefix_path), "1500")
+
+        build_indices(self.config, False)
+
+        node_backups = {nb.name: nb for nb in self.storage.list_node_backups()}
+        self.assertEqual(1500, node_backups['backup1'].snapshot_time)
+        self.assertIsNone(node_backups['backup2'].snapshot_time)
+        index_blobs = [b.name for b in driver.list_objects('{}index/backup_index'.format(prefix_path))]
+        self.assertIn('{}index/backup_index/backup1/snapshot_time_node1_1500.timestamp'.format(prefix_path),
+                      index_blobs)
+        self.assertEqual([], [b for b in index_blobs if 'backup2/snapshot_time' in b])
+
+    def test_node_backup_snapshot_time_setter_stores_it_in_meta(self):
+        node_backup = NodeBackup(storage=self.storage, fqdn='node1', name='backup1')
+        self.assertIsNone(node_backup.snapshot_time)
+        node_backup.snapshot_time = 1500
+        self.assertEqual(1500, node_backup.snapshot_time)
+        self.assertEqual(1500, NodeBackup(storage=self.storage, fqdn='node1', name='backup1').snapshot_time)
+        self.assertEqual(
+            '1500',
+            self.storage.storage_driver.get_blob_content_as_string(
+                '{}node1/backup1/meta/snapshot_time.txt'.format(self.storage.prefix_path)))
+
     def test_parse_backup_index_with_wrong_names(self):
         file_content = "content of the test file"
         prefix_path = self.storage.prefix_path
@@ -363,10 +396,116 @@ class StorageTest(unittest.TestCase):
             self.storage.get_timestamp_from_blob_name('index/bi/third_backup/finished_localhost_1574343029.timestamp')
         )
 
+    def test_snapshot_time_blob_name_parsing(self):
+        blob_name = "snapshot_time_localhost_1574343029.timestamp"
+        self.assertEqual("localhost", self.storage.get_fqdn_from_any_index_blob(blob_name))
+        self.assertEqual(1574343029, self.storage.get_timestamp_from_blob_name(blob_name))
+
+        blob_name = "index/backup_index/third_backup/snapshot_time_some_underscores.host.net_1574343029.timestamp"
+        self.assertEqual("some_underscores.host.net", self.storage.get_fqdn_from_any_index_blob(blob_name))
+        self.assertEqual(1574343029, self.storage.get_timestamp_from_blob_name(blob_name))
+
+        blob_name = "prefix/index/backup_index/third_backup/snapshot_time_localhost_1574343029.timestamp"
+        self.assertEqual("localhost", self.storage.get_fqdn_from_any_index_blob(blob_name))
+        self.assertEqual(1574343029, self.storage.get_timestamp_from_blob_name(blob_name))
+
+    def _upload_index_blobs(self, backup_name, fqdn, started, finished, snapshot_time=None):
+        index_dir = '{}index/backup_index/{}'.format(self.storage.prefix_path, backup_name)
+        driver = self.storage.storage_driver
+        # list_node_backups only returns backups whose schema blob exists in the data folder
+        driver.upload_blob_from_string(
+            '{}{}/{}/meta/schema.cql'.format(self.storage.prefix_path, fqdn, backup_name), 'schema')
+        driver.upload_blob_from_string('{}/tokenmap_{}.json'.format(index_dir, fqdn), '{}')
+        driver.upload_blob_from_string('{}/schema_{}.cql'.format(index_dir, fqdn), 'schema')
+        driver.upload_blob_from_string('{}/manifest_{}.json'.format(index_dir, fqdn), '[]')
+        driver.upload_blob_from_string('{}/started_{}_{}.timestamp'.format(index_dir, fqdn, started), str(started))
+        driver.upload_blob_from_string('{}/finished_{}_{}.timestamp'.format(index_dir, fqdn, finished), str(finished))
+        if snapshot_time is not None:
+            driver.upload_blob_from_string(
+                '{}/snapshot_time_{}_{}.timestamp'.format(index_dir, fqdn, snapshot_time), str(snapshot_time))
+
+    def test_list_node_backups_with_snapshot_time(self):
+        self._upload_index_blobs('backup1', 'node1', 1000, 2000, snapshot_time=1500)
+        self._upload_index_blobs('backup2', 'node1', 3000, 4000)
+
+        with patch.object(self.storage.storage_driver, 'list_objects',
+                          wraps=self.storage.storage_driver.list_objects) as list_objects:
+            node_backups = {nb.name: nb for nb in self.storage.list_node_backups()}
+            calls_after_listing = list_objects.call_count
+            self.assertEqual(1500, node_backups['backup1'].snapshot_time)
+            # no fallback to started/finished when the blob is missing
+            self.assertIsNone(node_backups['backup2'].snapshot_time)
+            # reading snapshot_time does not trigger any extra storage call when listing
+            self.assertEqual(calls_after_listing, list_objects.call_count)
+
+        self.assertEqual(1000, node_backups['backup1'].started)
+        self.assertEqual(2000, node_backups['backup1'].finished)
+        self.assertEqual(3000, node_backups['backup2'].started)
+        self.assertEqual(4000, node_backups['backup2'].finished)
+        self.assertEqual(['backup1', 'backup2'], [nb.name for nb in self.storage.list_node_backups()])
+
+    def test_list_node_backups_without_any_snapshot_time(self):
+        self._upload_index_blobs('backup1', 'node1', 1000, 2000)
+        node_backups = list(self.storage.list_node_backups())
+        self.assertEqual(1, len(node_backups))
+        self.assertIsNone(node_backups[0].snapshot_time)
+        self.assertEqual(1000, node_backups[0].started)
+
+    def _upload_snapshot_time_meta(self, fqdn, backup_name, snapshot_time):
+        self.storage.storage_driver.upload_blob_from_string(
+            '{}{}/{}/meta/snapshot_time.txt'.format(self.storage.prefix_path, fqdn, backup_name), str(snapshot_time))
+
+    def test_node_backup_snapshot_time_lazy_lookup_reads_meta(self):
+        self._upload_snapshot_time_meta('node1', 'backup1', 1500)
+        node_backup = NodeBackup(storage=self.storage, fqdn='node1', name='backup1')
+
+        with patch.object(self.storage.storage_driver, 'get_blob_content_as_string',
+                          wraps=self.storage.storage_driver.get_blob_content_as_string) as get_content:
+            self.assertEqual(1500, node_backup.snapshot_time)
+            self.assertEqual(1500, node_backup.snapshot_time)
+            self.assertEqual(1, get_content.call_count)
+
+    def test_node_backup_snapshot_time_lazy_lookup_absent_is_cached(self):
+        node_backup = NodeBackup(storage=self.storage, fqdn='node1', name='backup1')
+
+        with patch.object(self.storage.storage_driver, 'get_blob_content_as_string',
+                          wraps=self.storage.storage_driver.get_blob_content_as_string) as get_content:
+            self.assertIsNone(node_backup.snapshot_time)
+            self.assertIsNone(node_backup.snapshot_time)
+            self.assertEqual(1, get_content.call_count)
+
+    def test_node_backup_snapshot_time_lazy_lookup_is_per_node_and_backup(self):
+        self._upload_snapshot_time_meta('node1_a', 'backup1', 1700)
+        self._upload_snapshot_time_meta('node1_a', 'backup2', 1800)
+        self._upload_snapshot_time_meta('node1', 'backup2', 1600)
+
+        self.assertIsNone(NodeBackup(storage=self.storage, fqdn='node1', name='backup1').snapshot_time)
+        self.assertEqual(1700, NodeBackup(storage=self.storage, fqdn='node1_a', name='backup1').snapshot_time)
+        self.assertEqual(1600, NodeBackup(storage=self.storage, fqdn='node1', name='backup2').snapshot_time)
+
+    def test_cluster_backup_min_max_snapshot_time(self):
+        def node_backup(fqdn, snapshot_time):
+            return NodeBackup(storage=self.storage, fqdn=fqdn, name='backup1', snapshot_time_timestamp=snapshot_time)
+
+        cluster_backup = ClusterBackup('backup1', [node_backup('n1', 100), node_backup('n2', 300),
+                                                   node_backup('n3', 200)])
+        self.assertEqual(100, cluster_backup.min_snapshot_time)
+        self.assertEqual(300, cluster_backup.max_snapshot_time)
+
+        # nodes without snapshot_time are ignored
+        cluster_backup = ClusterBackup('backup1', [node_backup('n1', None), node_backup('n2', 300),
+                                                   node_backup('n3', 200)])
+        self.assertEqual(200, cluster_backup.min_snapshot_time)
+        self.assertEqual(300, cluster_backup.max_snapshot_time)
+
+        cluster_backup = ClusterBackup('backup1', [node_backup('n1', None), node_backup('n2', None)])
+        self.assertIsNone(cluster_backup.min_snapshot_time)
+        self.assertIsNone(cluster_backup.max_snapshot_time)
+
     def test_list_files_per_table_with_prefix(self):
 
         def fake_blob(s):
-            return AbstractBlob(s, 0, '0', datetime.now())
+            return AbstractBlob(s, 0, '0', datetime.now(), None)
 
         def fake_mo(s):
             return ManifestObject(s, 0, '0')
@@ -449,6 +588,11 @@ class StorageTest(unittest.TestCase):
             self.storage.sanitize_keyspace_and_table_name(p)
         )
 
+    def test_get_table_prefix(self):
+        self.assertEqual('localhost/data/', self.storage._get_table_prefix(None, 'localhost'))
+        self.assertEqual('localhost/data/', self.storage._get_table_prefix('', 'localhost'))
+        self.assertEqual('prefix/localhost/data/', self.storage._get_table_prefix('prefix', 'localhost'))
+
 
 def make_node_backup(storage, name, backup_date, differential=False, fqdn="localhost"):
     if differential is True:
@@ -464,6 +608,20 @@ def make_node_backup(storage, name, backup_date, differential=False, fqdn="local
                       started_timestamp=backup_date.timestamp(), finished_timestamp=backup_date.timestamp())
 
 
+def make_unfinished_node_backup(storage, name, backup_date, differential=False, fqdn="localhost"):
+    if differential is True:
+        differential_blob = make_blob("localhost/{}/meta/differential".format(name), backup_date.timestamp())
+    else:
+        differential_blob = None
+    tokenmap_blob = make_blob("localhost/{}/meta/tokenmap.json".format(name), backup_date.timestamp())
+    schema_blob = make_blob("localhost/{}/meta/schema.cql".format(name), backup_date.timestamp())
+    manifest_blob = None
+    return NodeBackup(storage=storage, fqdn=fqdn, name=str(name),
+                      differential_blob=differential_blob, manifest_blob=manifest_blob,
+                      tokenmap_blob=tokenmap_blob, schema_blob=schema_blob,
+                      started_timestamp=backup_date.timestamp(), finished_timestamp=None)
+
+
 def make_cluster_backup(storage, name, backup_date, nodes, differential=False):
     node_backups = list()
     for node in nodes:
@@ -474,7 +632,7 @@ def make_cluster_backup(storage, name, backup_date, nodes, differential=False):
 def make_blob(blob_name, blob_date):
     checksum = hashlib.md5()
     checksum.update(os.urandom(4))
-    return AbstractBlob(blob_name, randrange(100), checksum.hexdigest(), datetime.fromtimestamp(blob_date))
+    return AbstractBlob(blob_name, randrange(100), checksum.hexdigest(), datetime.fromtimestamp(blob_date), None)
 
 
 if __name__ == '__main__':
